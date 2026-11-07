@@ -42,10 +42,13 @@ jobs:
           sys.exit(1 if failed else 0)
       - name: ShellCheck
         run: shellcheck scripts/*.sh
-      - name: 官方插件检查
+      # 官方要求（镜像按摘要固定、健康检查、标签、许可证、作者、声明等）里，摘要要等发布流程推完镜像才写回
+      # compose，重建自家镜像的 PR 在发布前满足不了，所以 PR 上只跑非官方检查；官方要求由 publish.sh --official
+      # 在推镜像、写回摘要之后统一查。
+      - name: 插件包检查
         env:
           WONTON_CORE_IMAGE: ${{ inputs.core-image }}
-        run: scripts/check.sh --official
+        run: scripts/check.sh
       - name: Rust 格式、Clippy 和测试
         if: ${{ hashFiles('Cargo.toml') != '' }}
         run: |
@@ -74,7 +77,73 @@ jobs:
     steps:
       # 可复用工作流检出的是调用方的插件仓库，不是套件仓库。
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # 出口代理：声明 network.egress 的插件经核心的出口容器出网（ADR-0023），出口容器把流量转发到
+      # 这里起的转发代理；装时要出网的插件（如 openclaw 的 init 装 npm 包）没有它就装不上。
+      # 镜像和核心出口容器是同一个（gogost/gost，MIT，按摘要固定）。端口只绑 Docker 网桥的网关地址，
+      # 不对公网暴露。对不出网的插件没有副作用：核心只为声明了 egress 的插件网络接出口容器，
+      # smoke 配好代理后会先探测这条链路，不通时冒烟当场失败并写明原因。
+      - name: 起出口代理
+        run: |
+          gw="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
+          docker run -d --name wonton-ci-egress -p "${gw}:3128:3128" \
+            gogost/gost:3@sha256:f266f957c6e4f8d433ed23202a5745fa4969d08f3f0ef034fb9357345e16ad67 \
+            -L "http://:3128"
+          for i in $(seq 1 10); do
+            curl -fsS -x "http://${gw}:3128" -o /dev/null https://github.com && break
+            if [[ "$i" == 10 ]]; then docker logs wonton-ci-egress; exit 1; fi
+            sleep 1
+          done
+          echo "WONTON_DEV_EGRESS_PROXY=http://${gw}:3128" >> "$GITHUB_ENV"
       - name: 端到端冒烟（装得上、网页打得开、用户身份能用、工具 Bot 调得到）
         env:
           WONTON_CORE_IMAGE: ${{ inputs.core-image }}
         run: scripts/dev.sh smoke
+      # 拉镜像、健康检查、探测这些失败原因只在 .wonton/smoke.log 里，不打出来就没法分诊。
+      # 令牌和会话 cookie 按约定只进 .env 和 cookie 文件，不进日志；这里仍按键名掩掉
+      # credential 形态的值，防止哪个探测把带令牌的地址或响应原样打进来（sha256 摘要不受影响）。
+      - name: 冒烟日志末尾（失败时）
+        if: failure()
+        run: |
+          log=".wonton/smoke.log"
+          if [[ ! -s "$log" ]]; then
+            echo "（$log 不存在或为空：冒烟在写日志前就退出了）"
+            exit 0
+          fi
+          python3 - "$log" "$RUNNER_TEMP/smoke-redacted.log" <<'PY'
+          import re
+          import sys
+
+          src, dst = sys.argv[1], sys.argv[2]
+          # 键名允许带前缀（WONTON_SECRET_OWNER_PASSWORD、X-Auth-Token），键右侧要词边界。
+          keys = (r"(?:[\w.-]+[-_])?(?:client_secret|access_token|refresh_token|session_token|"
+                  r"api[-_]?key|password|passwd|secret|token|authorization)\b")
+          patterns = [
+              # Authorization: Bearer xxx 先掩，避免键值对规则把 "Bearer" 当值掩掉、令牌留下。
+              re.compile(r"(?i)(bearer\s+)(\S+)()"),
+              # key="value"
+              re.compile(rf"(?i)(\b{keys}\s*=\s*[\"'])([^\"']*)([\"'])"),
+              # key=value、key: value（URL 查询串、环境变量、YAML）
+              re.compile(rf"(?i)(\b{keys}\s*[:=]\s*)([^\s&\"']+)()"),
+          ]
+
+          def mask(m: re.Match) -> str:
+              prefix, value, suffix = m.group(1), m.group(2), m.group(3)
+              if value.startswith("${") or value.lower() == "bearer":
+                  return m.group(0)  # 变量引用和scheme词不是密钥，留着好排错
+              return f"{prefix}***{suffix}"
+
+          with open(dst, "w", encoding="utf-8") as out:
+              for line in open(src, encoding="utf-8", errors="replace"):
+                  for pat in patterns:
+                      line = pat.sub(mask, line)
+                  out.write(line)
+          PY
+          echo "== .wonton/smoke.log 末尾 80 行（已脱敏；完整日志见 artifact smoke-log）=="
+          tail -n 80 "$RUNNER_TEMP/smoke-redacted.log"
+      - name: 上传冒烟日志（失败时）
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: smoke-log
+          path: ${{ runner.temp }}/smoke-redacted.log
+          if-no-files-found: ignore

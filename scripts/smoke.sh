@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# 插件合并前的端到端冒烟：用工作区的插件起一套一次性开发环境，四项真实请求，不用 mock。
-#   scripts/dev.sh smoke
-# 四项：装得上 / 网页打得开 / 用户身份能用 / 工具 Bot 调得到。任何 FAIL 退出非 0。
+# 插件合并前的端到端冒烟：用工作区的插件起一套一次性开发环境，六项真实请求，不用 mock。
+#   scripts/dev.sh smoke [--upgrade-from <tag>]
+# 六项：装得上 / 网页打得开 / 用户身份能用 / 工具 Bot 调得到 / 升级保数据 / 重装保数据。任何 FAIL 退出非 0。
 # 插件自己的探测在 scripts/smoke-probes.sh，写法见模板里的这个文件。
 # 作者已有的 .wonton 不动：整个工作区复制到临时目录，用冒烟自己的实例，跑完删掉容器、网络、卷和目录。
 #
+# --upgrade-from：从哪个 tag 升级验证数据；默认取 git describe 到的最近 tag，本仓库没有 tag 时“升级保数据”记 N/A。
 # WONTON_DEV_EGRESS_PROXY：给了就先把它配成核心的出口代理（插件冷启动要出网时用），不给就不配。
 set -uo pipefail
 # shellcheck source=scripts/lib.sh
@@ -13,7 +14,16 @@ set -uo pipefail
 # shellcheck source=scripts/probes.sh
 . "$(dirname "$0")/probes.sh"
 
-for tool in docker curl jq python3 timeout nice flock; do
+usage() { sed -n '2,4p' "$0" >&2; exit 2; }
+upgrade_from=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --upgrade-from) [[ $# -ge 2 && -n "$2" ]] || usage; upgrade_from="$2"; shift 2 ;;
+    *) usage ;;
+  esac
+done
+
+for tool in docker curl jq python3 timeout nice flock git; do
   need "$tool"
 done
 
@@ -33,15 +43,9 @@ SMOKE_JAR="$copy/.wonton/session.cookies"
 SMOKE_TOOLS="$work/tools.json"
 PROBES_LOG="$LOG"
 
-# #121：宿主机配了 Docker 客户端代理时，容器会带上 HTTP_PROXY，Hydra 的回环健康检查一直失败。
-# 去掉 config.json 的 proxies，其余（凭据、context）留着。
-docker_config="${DOCKER_CONFIG:-$HOME/.docker}"
-if [[ -f "$docker_config/config.json" ]]; then
-  mkdir -p "$work/docker-config"
-  cp -a "$docker_config/." "$work/docker-config/"
-  jq 'del(.proxies)' "$docker_config/config.json" >"$work/docker-config/config.json"
-  export DOCKER_CONFIG="$work/docker-config"
-fi
+# #121：宿主机给 Docker 客户端配了代理时，容器会带上 HTTP_PROXY，Hydra 的回环健康检查一直失败。
+# 剥代理的逻辑在 lib.sh 的 strip_docker_proxies，副本放在 $work 里跟着清理。
+strip_docker_proxies "$work/docker-config"
 
 cleanup() {
   local image=""
@@ -99,24 +103,37 @@ if [[ -n "${WONTON_SMOKE_MAX_STACKS:-}" ]]; then
   done
 fi
 
+# 升级验证的起点：--upgrade-from 指定的 tag，或 git describe 到的最近 tag；没有 tag 就不测升级。
+if [[ -z "$upgrade_from" ]]; then
+  upgrade_from="$(git -C "$root" describe --tags --abbrev=0 2>/dev/null || true)"
+else
+  git -C "$root" rev-parse -q --verify "refs/tags/$upgrade_from^{commit}" >/dev/null ||
+    die "本机没有 tag $upgrade_from"
+fi
+if [[ -n "$upgrade_from" && ! -d "$root/.git" ]]; then
+  die "工作区没有 .git，装不了 tag $upgrade_from"
+fi
+
 say "复制工作区（不动 .wonton）"
 mkdir "$copy"
 tar -C "$root" --exclude=.wonton --exclude=.git -cf - . | tar -C "$copy" -xf - || die "复制工作区失败"
+# dev.sh 从复制出来的工作区里 git archive 出 tag：.git 用符号链接指回原仓库，不复制对象。
+[[ ! -d "$root/.git" ]] || ln -s "$root/.git" "$copy/.git"
 chmod -R a+rX "$copy"
 
 probes_facts "$copy"
 probes_load
 
 # ---------- 1. 装得上 ----------
-say "1. 装得上（check --official、install、running healthy）"
-chk_out="$(cd "$copy" && nice -n 19 timeout 900 scripts/check.sh --official 2>&1)" && chk_rc=0 || chk_rc=$?
+say "1. 装得上（check、install、running healthy）"
+chk_out="$(cd "$copy" && nice -n 19 timeout 900 scripts/check.sh 2>&1)" && chk_rc=0 || chk_rc=$?
 printf '%s\n' "$chk_out" >>"$LOG"
 chk_first="$(head -1 <<<"$chk_out")"
 if ((chk_rc != 0)); then
-  fail 装得上 "check.sh --official 退出 $chk_rc：$chk_first"
+  fail 装得上 "check.sh 退出 $chk_rc：$chk_first"
   chk_note="check 不合格（$chk_first）；"
 else
-  chk_note="check --official 通过；"
+  chk_note="check 通过；"
 fi
 
 if ! probes_dev up >>"$LOG" 2>&1; then
@@ -156,6 +173,23 @@ if declare -F before_install >/dev/null; then
   say "装前准备（before_install）"
   before_install >>"$LOG" 2>&1 || { fail 装得上 "before_install 失败，看 $LOG"; exit 0; }
 fi
+
+# 数据：先装升级起点（有 tag 时）写一条数据，再装工作区版本验证升级不丢；重装同理。
+data_wrote=0
+data_upgrade_base=0
+if [[ "$DATA_NA" != 1 ]] && (( DATA_HOOKS )) && [[ -n "$upgrade_from" ]]; then
+  say "装 tag $upgrade_from（写数据后升级）"
+  if probes_dev_t 600 install --yes "$upgrade_from" >>"$LOG" 2>&1 &&
+    probes_status_wait "$PROBES_PLUGIN_ID" 40 >/dev/null; then
+    data_upgrade_base=1
+    if probes_data_write; then data_wrote=1; else
+      fail 升级保数据 "data_write 失败（tag $upgrade_from），见 $LOG 末尾：$(tail -c 200 "$LOG" | tr '\n' ' ')"
+    fi
+  else
+    fail 升级保数据 "装 tag $upgrade_from 失败或 600 秒超时，看 $LOG"
+  fi
+fi
+
 if ! probes_dev install --yes >>"$LOG" 2>&1; then
   fail 装得上 "dev.sh install --yes 失败，看 $LOG"
   for item in 网页打得开 用户身份能用 工具Bot调得到; do fail "$item" "装不上"; done
@@ -169,4 +203,33 @@ else
 fi
 
 # 探针部分：网页打得开、用户身份能用、工具 Bot 调得到，和 dev.sh probes 共用。
-probes_run
+probes_run web_assert identity_check mcp
+
+# ---------- 5/6. 升级/重装保数据 ----------
+say "5/6. 升级保数据、重装保数据"
+if [[ "$DATA_NA" == 1 ]]; then
+  na 升级保数据 "${SMOKE_NOTE:+$SMOKE_NOTE；}插件声明 DATA_NA=1"
+  na 重装保数据 "${SMOKE_NOTE:+$SMOKE_NOTE；}插件声明 DATA_NA=1"
+elif (( DATA_HOOKS == 0 )); then
+  fail 升级保数据 "没写数据钩子：在 scripts/smoke-probes.sh 写 data_write 和 data_check（没有用户数据就写 DATA_NA=1）"
+  fail 重装保数据 "没写数据钩子：在 scripts/smoke-probes.sh 写 data_write 和 data_check（没有用户数据就写 DATA_NA=1）"
+else
+  if [[ -n "$upgrade_from" && "$data_upgrade_base" == 1 && "$data_wrote" == 1 ]]; then
+    probes_data_check 升级保数据 "升级自 tag $upgrade_from"
+  elif [[ -z "$upgrade_from" ]]; then
+    na 升级保数据 "本仓库没有 tag，只测重装（可用 --upgrade-from 指定）"
+  fi
+  if [[ "$data_wrote" != 1 ]]; then
+    if probes_data_write; then data_wrote=1; else
+      fail 重装保数据 "data_write 失败，见 $LOG 末尾：$(tail -c 200 "$LOG" | tr '\n' ' ')"
+    fi
+  fi
+  if [[ "$data_wrote" == 1 ]]; then
+    if probes_dev_t 900 reinstall --yes >>"$LOG" 2>&1 &&
+      probes_status_wait "$PROBES_PLUGIN_ID" 40 >/dev/null; then
+      probes_data_check 重装保数据 "reinstall 后"
+    else
+      fail 重装保数据 "dev.sh reinstall 失败或 900 秒超时，看 $LOG"
+    fi
+  fi
+fi

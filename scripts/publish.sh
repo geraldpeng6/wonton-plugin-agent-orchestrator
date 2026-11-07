@@ -3,7 +3,8 @@
 #
 # 先把清单里的 version 改成新版本、写好 release_notes，提交，再执行它。脚本按顺序：
 #   1. 检查：工作区是干净的，tag v<版本> 还没有，插件包合格。
-#   2. images/<名字>/ 下的每个 Dockerfile：构建 linux/amd64 和 linux/arm64 的镜像，推到 compose 里写的那个镜像仓库，
+#   2. images/<名字>/ 下的每个 Dockerfile：按清单 requirements.arch 构建镜像（没写就是 linux/amd64 和 linux/arm64），
+#      推到 compose 里写的那个镜像仓库，
 #      把 compose 里引用它的地方改成这个版本的摘要，提交。
 #   3. 再检查一遍（--official 时按官方索引的要求）。
 #   4. 打 tag v<版本>，推送当前分支和 tag（远端 origin）。
@@ -95,16 +96,37 @@ source_url() {
   echo "$url"
 }
 
+# 清单 requirements.arch 写的架构，如 linux/amd64,linux/arm64；没写时两种都构建。只写 amd64 的插件（CUDA 镜像、
+# 上游只发 amd64 的依赖）硬构建 arm64 会在依赖安装那一步失败。
+build_platforms() {
+  python3 - "$root/docker-compose.yml" <<'PY'
+import re, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+m = re.search(r"^(\s*)requirements:\s*\n((?:\1\s+.*\n?)*)", text, re.M)
+arch = []
+if m:
+    a = re.search(r"^\s*arch:\s*\[([^\]]*)\]", m.group(2), re.M)
+    if a:
+        arch = [x.strip().strip("'\"") for x in a.group(1).split(",") if x.strip()]
+    else:
+        b = re.search(r"^(\s*)arch:\s*\n((?:\1\s*-\s*.*\n?)*)", m.group(2), re.M)
+        if b:
+            arch = re.findall(r"-\s*['\"]?([\w]+)", b.group(2))
+print(",".join(f"linux/{x}" for x in (arch or ["amd64", "arm64"])))
+PY
+}
+
+platforms="$(build_platforms)"
 built=""
 for dockerfile in images/*/Dockerfile; do
   [[ -e "$dockerfile" ]] || continue
   name="$(basename "$(dirname "$dockerfile")")"
   repo="$(image_repo "$name")" || exit 1
-  info "构建并推送 $repo:$version（linux/amd64、linux/arm64）"
+  info "构建并推送 $repo:$version（${platforms//,/、}）"
   meta="$(mktemp)"
   # 带上源码仓库，ghcr.io 据此把镜像关联到仓库；Actions 里用 GITHUB_TOKEN 推送要靠这个关联。
   source="$(source_url)"
-  docker buildx build --platform linux/amd64,linux/arm64 --push --metadata-file "$meta" \
+  docker buildx build --platform "$platforms" --push --metadata-file "$meta" \
     --label "org.opencontainers.image.source=$source" \
     --annotation "index:org.opencontainers.image.source=$source" \
     -t "$repo:$version" "images/$name" || die "构建或推送 $repo 失败"
