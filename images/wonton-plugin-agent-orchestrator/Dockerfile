@@ -33,6 +33,7 @@ COPY agent.toml /etc/wonton-agent/
 COPY --chmod=0755 gateway /usr/local/lib/wonton-agent/gateway
 COPY --chmod=0755 ao-acp /usr/local/bin/ao-acp
 COPY --chmod=0755 adapter.py /usr/local/bin/wonton-ao-adapter
+COPY --chmod=0644 ao.py approvals.py transport.py /usr/local/bin/
 COPY prompt.md /usr/local/share/wonton-agent/prompt.md
 
 USER 65532:65532
