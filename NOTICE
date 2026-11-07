@@ -1,0 +1,25 @@
+Wonton 的 Agent Orchestrator 插件
+=================================
+
+上游程序
+--------
+
+- Agent Orchestrator（`OrchestratorInc/agent-orchestrator`），仓库
+  https://github.com/OrchestratorInc/agent-orchestrator 。许可证 Apache-2.0，全文见
+  `images/wonton-plugin-agent-orchestrator/LICENSE.agent-orchestrator`。
+  镜像按 v0.14.10 的源码原样构建（摘要核对，不改源码），运行时只需要它的 Go 守护进程二进制。
+
+- 适配器 `images/wonton-plugin-agent-orchestrator/adapter.py`、网关钩子、入口脚本由本插件仓库编写，
+  随插件包以 MIT 许可证分发。
+
+工人和编排器
+------------
+
+工人和编排器都是 Qwen Code（`@qwen-code/qwen-code`，阿里云，Apache-2.0），由 Agent 底座在容器首次启动时
+从官方 npm registry 按版本和摘要下载到数据卷，不进镜像。
+
+图标
+----
+
+`icon.png` 取自上游仓库的 `docs/assets/readme/logo.png`（512×512，未改色、未变形）。
+Agent Orchestrator 与 Orchestrator.inc 的名称和标志归 Orchestrator.inc 所有；本插件不是它的官方出品。

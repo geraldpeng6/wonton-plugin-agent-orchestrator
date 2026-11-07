@@ -1,0 +1,15 @@
+name: 检查
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # 手动入口：想合并前跑一遍冒烟时，从这里触发（冒烟作业只在 Dependabot 的 PR 和手动触发时跑）。
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    uses: geraldpeng6/wonton-plugin-template/.github/workflows/plugin-check.yml@35ede88a58fd4bba3dfb71a905d64e547026bda5
