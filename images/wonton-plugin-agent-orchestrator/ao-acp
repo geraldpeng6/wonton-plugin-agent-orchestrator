@@ -1,0 +1,50 @@
+#!/bin/sh
+# ACP 入口：底座每来一个桥连接起一次。先确保 AO 守护进程在跑（独立会话，桥断开也不退），
+# 再跑适配器。守护进程是本容器里唯一的状态持有者：只监听容器内 loopback，对外只经适配器。
+set -eu
+
+data=/data/agent/ao
+export AO_DATA_DIR="$data"
+export HOME="${HOME:-/data/agent/home}"
+# 遥测默认只走本地库里的事件，远端不出网。
+export AO_TELEMETRY_REMOTE=off
+export AO_TELEMETRY_METRICS=off
+# 守护进程、适配器和工人只连本机；容器里的代理变量别把它们带走。
+# 模型网关和 MCP 网关是插件内网地址，某些客户端只认小写 no_proxy，两个都写明。
+internal="127.0.0.1,localhost,host.docker.internal,models.wonton.internal,mcp.wonton.internal"
+export NO_PROXY="$internal${NO_PROXY:+,$NO_PROXY}" no_proxy="$internal${no_proxy:+,$no_proxy}"
+mkdir -p "$data"
+
+# 模型网关变量：网关钩子在容器启动时写好（没有网关时文件不存在）。
+if [ -f /data/agent/agent.env ]; then
+    set -a
+    . /data/agent/agent.env
+    set +a
+fi
+
+# 工人 CLI 由底座装到数据卷（版本目录），AO 按命令名找它：做一个稳定入口挂到 PATH 上。
+qwen_entry="$(ls -d /data/agent/tools/qwen-code/*/cli-entry.js 2>/dev/null | head -1 || true)"
+if [ -n "$qwen_entry" ]; then
+    mkdir -p /data/agent/bin
+    printf '#!/bin/sh\nexec node %s "$@"\n' "$qwen_entry" > /data/agent/bin/qwen
+    chmod 0755 /data/agent/bin/qwen
+fi
+export PATH="/data/agent/bin:$PATH"
+
+port="${AO_PORT:-3001}"
+if ! curl -fsS --noproxy '*' --max-time 2 "http://127.0.0.1:$port/healthz" >/dev/null 2>&1; then
+    setsid ao daemon >>"$data/daemon.log" 2>&1 &
+    i=0
+    while [ "$i" -lt 120 ]; do
+        curl -fsS --noproxy '*' --max-time 2 "http://127.0.0.1:$port/healthz" >/dev/null 2>&1 && break
+        i=$((i + 1))
+        sleep 0.5
+    done
+    curl -fsS --noproxy '*' --max-time 2 "http://127.0.0.1:$port/healthz" >/dev/null 2>&1 || {
+        echo "AO 守护进程 60 秒内没就绪，见 $data/daemon.log" >&2
+        tail -n 20 "$data/daemon.log" >&2 || true
+        exit 1
+    }
+fi
+
+exec python3 /usr/local/bin/wonton-ao-adapter

@@ -1,0 +1,24 @@
+# AO 的配置：编排器和工人都是 Qwen Code，经模型网关出模型；qwen-code 由底座在首次启动时
+# 从官方 npm registry 按摘要装到数据卷。AO 本体在镜像里（从上游固定版本的源码原样构建）。
+[[install]]
+name = "qwen-code"
+version = "0.26.9"
+source = "npm"
+package = "@qwen-code/qwen-code"
+integrity = "sha512-2orVsP3Dr01gk38STbYTWcFZeXftc0QXDHhglK7YPsIwgmumvnJeTAu1N00esRUwuLcevZ8k4godLwypDKb1LA=="
+
+# 编排器的记忆和 skill 跟着 qwen 自己的约定走。
+[skills]
+target = "~/.qwen/skills"
+
+[prompt]
+target = "~/.qwen/QWEN.md"
+
+# 网关钩子：把 WONTON_MODEL_* 写成工人读的 OPENAI_* 环境变量，并把 Wonton MCP 总线写进
+# qwen 的 MCP 配置；没有网关时清掉。
+[gateway]
+hook = "/usr/local/lib/wonton-agent/gateway"
+
+# ao-acp 先确保 AO 守护进程在跑，再跑 ACP 适配器；底座每来一个桥连接起一次。
+[acp]
+command = ["/usr/local/bin/ao-acp"]
