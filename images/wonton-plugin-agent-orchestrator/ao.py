@@ -159,23 +159,6 @@ def ensure_orchestrator(project_id):
 _bootstrap_lock = threading.Lock()
 
 
-def bootstrap():
-    global _main_session
-    with _bootstrap_lock:
-        if _main_session:
-            return _main_session
-        ensure_daemon()
-        ensure_repo()
-        project_id = ensure_project()
-        configure_project(project_id)
-        _main_session = ensure_orchestrator(project_id)
-        ensure_agent_running(_main_session)
-        log(f"主会话是编排器 {_main_session}")
-        start_sse()
-        start_session_thread(_main_session, "main")
-        return _main_session
-
-
 def bootstrap(on_ready):
     """确保守护进程、仓库、项目和编排器都在；返回编排器会话 id。"""
     global _main_session

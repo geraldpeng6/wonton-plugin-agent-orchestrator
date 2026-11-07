@@ -183,18 +183,10 @@ def take_text_answer(task, text):
             continue
         question.answers[question.awaiting] = text
         question.awaiting = None
-        for key in list(question.keys):
-            if key in question.answers:
-                continue
-            break
         if question.complete():
             resolve_question(task, activity_id, question, "accept")
         return True
     return False
-
-
-def encode(value):
-    return urllib.parse.quote(str(value), safe="")
 
 
 def encode(value):
