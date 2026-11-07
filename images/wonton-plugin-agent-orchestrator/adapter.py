@@ -334,11 +334,31 @@ def poll_task(task):
         task.last_activity_seq = seq
         if activity.get("status") == "pending":
             handle_pending_activity(task, activity)
+        report_state_from_worker(task, activity)
     derive_task_state(task, session)
     if session.get("isTerminated") and not task.finished_seq_noted:
         task.finished_seq_noted = True
         set_state(task, STATE_DONE if task.done_report else STATE_FAILED)
     return True
+
+
+def report_state_from_worker(task, activity):
+    """worker 自己跑 `ao report --done/--needs-input/--stuck` 时直接改状态：
+    编排器闲着时也不用等它的下一轮。"""
+    if activity.get("activityKind") != "command" or activity.get("status") != "completed":
+        return
+    summary = activity.get("summary") or ""
+    mapping = {
+        "report --done": STATE_DONE,
+        "report --needs-input": STATE_NEEDS_ANSWER,
+        "report --stuck": STATE_BLOCKED,
+    }
+    for needle, state in mapping.items():
+        if needle in summary:
+            if state == STATE_DONE:
+                task.done_report = True
+            set_state(task, state)
+            return
 
 
 def handle_pending_activity(task, activity):
