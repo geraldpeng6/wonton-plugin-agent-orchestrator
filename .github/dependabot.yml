@@ -1,0 +1,7 @@
+# 上游镜像发新版时开 PR，标签和摘要一起改；PR 跑插件自己的检查。
+version: 2
+updates:
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: daily

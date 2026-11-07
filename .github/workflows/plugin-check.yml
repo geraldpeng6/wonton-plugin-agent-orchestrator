@@ -1,0 +1,80 @@
+name: 插件检查
+
+on:
+  workflow_call:
+    inputs:
+      core-image:
+        description: 核心镜像（留空使用 scripts/lib.sh 的默认值）
+        required: false
+        type: string
+        default: ''
+  # 手动入口：从“检查”工作流（check.yml）触发，或在模板仓库直接跑本工作流验证冒烟作业。
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      # 可复用工作流检出的是调用方的插件仓库，不是套件仓库。
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 源文件不超过 800 行
+        shell: python
+        run: |
+          import os
+          import subprocess
+          import sys
+
+          paths = subprocess.check_output([
+              'git', 'ls-files', '-z', '--',
+              '*.rs', '*.py', '*.sh', '*.js', '*.ts', '*.go', '*.kt', '*.swift',
+          ]).split(b'\0')
+          failed = False
+          for raw_path in filter(None, paths):
+              path = os.fsdecode(raw_path)
+              with open(path, 'rb') as source:
+                  lines = sum(1 for _ in source)
+              if lines > 800:
+                  print(f'{path!r}: {lines} 行（上限 800）')
+                  failed = True
+          sys.exit(1 if failed else 0)
+      - name: ShellCheck
+        run: shellcheck scripts/*.sh
+      - name: 官方插件检查
+        env:
+          WONTON_CORE_IMAGE: ${{ inputs.core-image }}
+        run: scripts/check.sh --official
+      - name: Rust 格式、Clippy 和测试
+        if: ${{ hashFiles('Cargo.toml') != '' }}
+        run: |
+          rustup component add rustfmt clippy
+          cargo fmt --check
+          if [[ ! -f clippy.toml && ! -f .clippy.toml ]]; then
+            # Clippy 通过 CLIPPY_CONF_DIR 选择配置目录，而非通过环境变量设置单个阈值。
+            # https://doc.rust-lang.org/clippy/configuration.html
+            # https://doc.rust-lang.org/clippy/lint_configuration.html#too-many-lines-threshold
+            CLIPPY_CONF_DIR="$(mktemp -d "$RUNNER_TEMP/clippy.XXXXXX")"
+            export CLIPPY_CONF_DIR
+            printf 'too-many-lines-threshold = 100\n' > "$CLIPPY_CONF_DIR/clippy.toml"
+          fi
+          cargo clippy --all-targets -- -D warnings -W clippy::too_many_lines
+          cargo test
+
+  smoke:
+    # 依赖镜像的升级 PR 合并前要过端到端冒烟（scripts/dev.sh smoke，四项真实请求，不用 mock）。
+    # 判“Dependabot 的 PR”同时看 actor 和 PR 作者：Dependabot 自己 rebase 时 actor 是 dependabot[bot]，
+    # 但任何人往 Dependabot 分支推 commit 都会把 actor 顶掉，PR 作者不会变。
+    # Dependabot 的 PR 拿到的是只读令牌：这一步只检出和起本地容器，不用仓库密钥、不写仓库。
+    if: ${{ github.event_name == 'workflow_dispatch' || github.actor == 'dependabot[bot]' || github.event.pull_request.user.login == 'dependabot[bot]' }}
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      # 可复用工作流检出的是调用方的插件仓库，不是套件仓库。
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 端到端冒烟（装得上、网页打得开、用户身份能用、工具 Bot 调得到）
+        env:
+          WONTON_CORE_IMAGE: ${{ inputs.core-image }}
+        run: scripts/dev.sh smoke
