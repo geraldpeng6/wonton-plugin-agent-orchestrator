@@ -8,12 +8,41 @@ set -euo pipefail
 # shellcheck source=scripts/lib.sh
 . "$(dirname "$0")/lib.sh"
 
-need docker
+need docker python3
 case "${1:-}" in
   '' | --official) ;;
   *) die "用法：scripts/check.sh [--official]" ;;
 esac
 need_core_command check
+
+# 核心只在清单 spec 太新时报错，并顺带说出支持到哪一版；插件 spec 旧于核心时静默通过，模板照抄旧 spec 也不吭声。
+# 拿一个必报太新的最小清单去问核心支持到哪版（问不到就不提醒），比清单的 spec 旧就提醒一句。
+spec_reminder() {
+  local facts plugin_spec core_max probe core_out a1 a2 b1 b2
+  facts="$(docker compose -f "$root/docker-compose.yml" config --no-interpolate --format json 2>/dev/null)" || return 0
+  plugin_spec="$(python3 - "$facts" <<'PY'
+import json, sys
+try:
+    print(json.loads(sys.argv[1]).get("x-wonton", {}).get("spec", ""))
+except Exception:
+    pass
+PY
+)" || return 0
+  [[ "$plugin_spec" =~ ^[0-9]+\.[0-9]+$ ]] || return 0
+  probe="$(mktemp -d)" || return 0
+  printf 'x-wonton:\n  spec: "99.0"\n' >"$probe/docker-compose.yml"
+  core_out="$(in_core "$probe" plugin check /plugin 2>&1 || true)"
+  rm -rf "$probe"
+  [[ "$core_out" =~ 只支持到[[:space:]]+([0-9]+\.[0-9]+) ]] || return 0
+  core_max="${BASH_REMATCH[1]}"
+  IFS=. read -r a1 a2 <<<"$plugin_spec"
+  IFS=. read -r b1 b2 <<<"$core_max"
+  if ((a1 > b1 || (a1 == b1 && a2 >= b2))); then
+    return 0
+  fi
+  echo "提醒：清单是 spec $plugin_spec，核心镜像 $(core_image) 支持到 $core_max；新插件建议写现行版本（字段见 https://github.com/geraldpeng6/wonton-docs/blob/main/plugin-spec.md）。" >&2
+}
+
 output="$(mktemp)"
 trap 'rm -f "$output"' EXIT
 set +e
@@ -24,4 +53,5 @@ cat "$output"
 if [[ "${1:-}" == --official && "$(cat "$output")" =~ 插件按规范[[:space:]]+([0-9]+\.[0-9]+).*只支持到[[:space:]]+([0-9]+\.[0-9]+) ]]; then
   echo "核心镜像 $(core_image) 只支持到 spec ${BASH_REMATCH[2]}，当前清单是 spec ${BASH_REMATCH[1]}；请升级核心，或用 WONTON_CORE_IMAGE 指定支持当前 spec 的镜像。" >&2
 fi
+spec_reminder
 exit "$status"

@@ -11,8 +11,9 @@
 #   probes_facts <目录>   解析清单，备好 PROBES_PLUGIN_ID/SLUG/HAS_WEBUI/SSO/HAS_MCP（原文在 PROBES_FACTS）
 #   probes_load           读插件的 smoke-probes.sh（没有这个文件时，后面按“没写探测”处理）
 #   probes_env            实例起来以后调用：备好 SMOKE_* 变量和 dweb/web_get/mcp/smoke_api 助手
-#   probes_run [探针名…]  跑 web_assert / identity_check / mcp 三项，不给名字就全跑
+#   probes_run [探针名…]  跑 web_assert / identity_check / mcp / data_write / data_check 各项，不给名字就全跑
 # 有 FAIL 时 DID_FAIL=1，退出码由调用方定；这里的函数不 exit，停不停由调用方决定。
+# 数据探针 data_write / data_check：插件不存用户数据时写 DATA_NA=1（两项记 N/A）。
 DID_FAIL=0
 
 say() { echo "== $*"; }
@@ -25,8 +26,42 @@ probes_dev() {
   (cd "$SMOKE_DIR" && WONTON_DEV_STATE="$SMOKE_STATE" WONTON_INSTANCE="$SMOKE_INSTANCE" nice -n 19 scripts/dev.sh "$@")
 }
 
+# 装 tag、reinstall 限时：卡住时如实记 FAIL，不把名额占死。
+probes_dev_t() { # <秒数> <dev.sh 参数…>
+  local secs="$1"; shift
+  (cd "$SMOKE_DIR" && WONTON_DEV_STATE="$SMOKE_STATE" WONTON_INSTANCE="$SMOKE_INSTANCE" nice -n 19 timeout "$secs" scripts/dev.sh "$@")
+}
+
 probes_setting() { # 状态目录 .env 里的一项设置
   sed -n "s/^$1=//p" "$SMOKE_STATE/.env" | tail -1
+}
+
+# 插件钩子限时跑：函数开在子 shell 里（能看见调用方的函数和变量），超时就杀掉。
+probes_hook() { # <函数名> [秒数]
+  local fn="$1" secs="${2:-300}" pid i
+  "$fn" >>"$PROBES_LOG" 2>&1 &
+  pid=$!
+  for ((i = 0; i < secs; i++)); do
+    jobs -pr | grep -qx "$pid" || { wait "$pid"; return $?; }
+    sleep 1
+  done
+  kill "$pid" 2>/dev/null
+  wait "$pid"
+  echo "$fn 超过 ${secs}s 没结束" >>"$PROBES_LOG"
+  return 124
+}
+
+probes_data_write() { # 跑 data_write；标记由插件存进 $SMOKE_STATE
+  probes_hook data_write
+}
+
+probes_data_check() { # <结果项> [补充说明]：跑 data_check，对不上记该项 FAIL
+  local item="$1" note="${2:+$2：}"
+  if probes_hook data_check; then
+    pass "$item" "${note}data_check 找到了写进去的数据"
+  else
+    fail "$item" "${note}data_check 对不上，见 $PROBES_LOG 末尾：$(tail -c 200 "$PROBES_LOG" | tr '\n' ' ')"
+  fi
 }
 
 probes_facts() { # <仓库目录>：清单事实；compose 自己解析，不引额外依赖
@@ -45,6 +80,7 @@ probes_facts() { # <仓库目录>：清单事实；compose 自己解析，不引
 
 probes_load() { # 读插件的探针；探针里可用的变量和助手在 probes_env 里备齐
   IDENTITY_NA=0
+  DATA_NA=0
   MCP_TOOL=""
   MCP_ARGS='{}'
   SMOKE_NOTE=""
@@ -53,6 +89,8 @@ probes_load() { # 读插件的探针；探针里可用的变量和助手在 prob
     # shellcheck source=scripts/smoke-probes.sh
     . "$SMOKE_DIR/scripts/smoke-probes.sh"
   fi
+  DATA_HOOKS=0
+  if declare -F data_write >/dev/null && declare -F data_check >/dev/null; then DATA_HOOKS=1; fi
 }
 
 probes_env() { # 实例起来以后调用；读不到用户令牌时返回 1
@@ -211,22 +249,24 @@ probes_mcp() { # 工具 Bot 调得到：tools/list 有本插件工具，只读�
   fi
 }
 
-probes_run() { # [探针名…]：跑探针项（web_assert、identity_check、mcp），不给名字就全跑
-  local name web=0 identity=0 mcp=0
+probes_run() { # [探针名…]：跑探针项，不给名字就全跑
+  local name web=0 identity=0 mcp=0 data_write=0 data_check=0
   for name in "$@"; do
     case "$name" in
-      web_assert | identity_check | mcp) ;;
-      *) die "不认识的探针名：$name（可选 web_assert、identity_check、mcp）" ;;
+      web_assert | identity_check | mcp | data_write | data_check) ;;
+      *) die "不认识的探针名：$name（可选 web_assert、identity_check、mcp、data_write、data_check）" ;;
     esac
   done
   if (($# == 0)); then
-    web=1 identity=1 mcp=1
+    web=1 identity=1 mcp=1 data_write=1 data_check=1
   else
     for name in "$@"; do
       case "$name" in
         web_assert) web=1 ;;
         identity_check) identity=1 ;;
         mcp) mcp=1 ;;
+        data_write) data_write=1 ;;
+        data_check) data_check=1 ;;
       esac
     done
   fi
@@ -243,6 +283,19 @@ probes_run() { # [探针名…]：跑探针项（web_assert、identity_check、m
   if ((mcp)); then
     say "4. 工具 Bot 调得到"
     probes_mcp
+  fi
+  if ((data_write || data_check)); then
+    say "5. 数据写入与读回"
+    if [[ "$DATA_NA" == 1 ]]; then
+      na 数据 "${SMOKE_NOTE:-}${SMOKE_NOTE:+；}插件声明 DATA_NA=1"
+    elif ((DATA_HOOKS == 0)); then
+      fail 数据 "没写数据钩子：在 scripts/smoke-probes.sh 写 data_write 和 data_check（没有用户数据就写 DATA_NA=1）"
+    else
+      if ((data_write)); then
+        probes_data_write || fail 数据写入 "data_write 失败，见 $PROBES_LOG 末尾：$(tail -c 200 "$PROBES_LOG" | tr '\n' ' ')"
+      fi
+      ((data_check)) && probes_data_check 数据还在
+    fi
   fi
   return 0
 }

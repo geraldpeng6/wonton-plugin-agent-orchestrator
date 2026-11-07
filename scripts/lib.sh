@@ -74,3 +74,31 @@ plugin_version() {
   [[ -n "$line" ]] || die "插件包解析不了，先运行 scripts/check.sh 看原因"
   echo "${line#* }"
 }
+
+# #121：宿主机给 Docker 客户端配了代理（config.json 的 proxies）时，docker CLI 建的每个容器都带上 HTTP_PROXY
+# 这类变量，容器里访问代理挡住的地址会报 proxyconnect tcp，极易误判成插件的问题。
+# strip_docker_proxies [目标目录]：把 config.json 复制一份去掉 proxies（凭据、context 留着），DOCKER_CONFIG 指过去，
+# 之后这个进程用 docker CLI 起的容器不再带代理。没配代理、读不了或目标就是原目录时原样保留，一个进程只剥一次。
+strip_docker_proxies() {
+  local docker_config="${DOCKER_CONFIG:-$HOME/.docker}" stripped target="${1:-$state/docker-config}"
+  [[ -n "${WONTON_DOCKER_PROXIES_STRIPPED:-}" ]] && return 0
+  WONTON_DOCKER_PROXIES_STRIPPED=1
+  [[ -f "$docker_config/config.json" ]] || return 0
+  stripped="$(python3 - "$docker_config/config.json" <<'PY'
+import json, sys
+try:
+    config = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(1)
+if config.pop("proxies", None) is None:
+    sys.exit(3)
+print(json.dumps(config))
+PY
+)" || return 0
+  [[ "$target" -ef "$docker_config" ]] && return 0
+  rm -rf "$target"
+  mkdir -p "$target"
+  cp -a "$docker_config/." "$target/"
+  printf '%s\n' "$stripped" >"$target/config.json"
+  export DOCKER_CONFIG="$target"
+}
