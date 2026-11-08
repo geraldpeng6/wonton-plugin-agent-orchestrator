@@ -37,7 +37,10 @@ LOG="$root/.wonton/smoke.log"
 : >"$LOG"
 instance="smoke$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
 SMOKE_DIR="$copy"
-SMOKE_STATE="$copy/.wonton"
+SMOKE_DEV_STATE="$copy/.wonton"
+# 数据标记是个空文件（与 e2e 冒烟的约定一致）：插件钩子只当它是文件，不往里建目录。
+SMOKE_STATE="$work/data-marker"
+: >"$SMOKE_STATE"
 SMOKE_INSTANCE="$instance"
 SMOKE_JAR="$copy/.wonton/session.cookies"
 SMOKE_TOOLS="$work/tools.json"
@@ -182,7 +185,9 @@ if [[ "$DATA_NA" != 1 ]] && (( DATA_HOOKS )) && [[ -n "$upgrade_from" ]]; then
   if probes_dev_t 600 install --yes "$upgrade_from" >>"$LOG" 2>&1 &&
     probes_status_wait "$PROBES_PLUGIN_ID" 40 >/dev/null; then
     data_upgrade_base=1
-    if probes_data_write; then data_wrote=1; else
+    # 钩子要用网页地址和用户会话：这一轮在主安装之前，probes_run 还没取过、也没登录过。
+    probes_dev session >>"$LOG" 2>&1 || say "升级起点上会话建立失败（data_write 可能 401）"
+    if probes_web_url 升级保数据 && probes_data_write; then data_wrote=1; else
       fail 升级保数据 "data_write 失败（tag $upgrade_from），见 $LOG 末尾：$(tail -c 200 "$LOG" | tr '\n' ' ')"
     fi
   else
@@ -190,8 +195,11 @@ if [[ "$DATA_NA" != 1 ]] && (( DATA_HOOKS )) && [[ -n "$upgrade_from" ]]; then
   fi
 fi
 
-if ! probes_dev install --yes >>"$LOG" 2>&1; then
-  fail 装得上 "dev.sh install --yes 失败，看 $LOG"
+# 装过升级起点时，核心不接受 install 覆盖已装的插件（同一版本号也一样）：升级用 reinstall，保留数据。
+install_cmd=install
+((data_upgrade_base == 1)) && install_cmd=reinstall
+if ! probes_dev "$install_cmd" --yes >>"$LOG" 2>&1; then
+  fail 装得上 "dev.sh $install_cmd --yes 失败，看 $LOG"
   for item in 网页打得开 用户身份能用 工具Bot调得到; do fail "$item" "装不上"; done
   exit 0
 fi

@@ -242,7 +242,7 @@ PY
 # 名字时一样。没有这个接口（404）的核心从 .env 读邮箱。
 fill_profile() {
   local result status body
-  result="$(api GET /_wonton/api/owner-profile -w '\n%{http_code}' 2>/dev/null)" || true
+  result="$(api GET /_wonton/api/me -w '\n%{http_code}' 2>/dev/null)" || true
   status="${result##*$'\n'}"
   body="${result%$'\n'*}"
   [[ "$status" != 404 ]] || return 0
@@ -250,13 +250,13 @@ fill_profile() {
   body="$(python3 - "$body" "$owner_email" <<'PY'
 import json, sys
 profile = json.loads(sys.argv[1])
-if not profile["email"]:
-    print(json.dumps({"display_name": profile["display_name"] or profile["username"], "email": sys.argv[2]}))
+if not profile.get("email"):
+    print(json.dumps({"display_name": profile.get("display_name") or profile["username"], "email": sys.argv[2]}))
 PY
   )" || die "看不懂核心回的资料：$result"
   [[ -n "$body" ]] || return 0
   info "填上你的资料（$owner_email）"
-  result="$(api PUT /_wonton/api/owner-profile -H 'Content-Type: application/json' -d "$body")" ||
+  result="$(api PUT /_wonton/api/me -H 'Content-Type: application/json' -d "$body")" ||
     die "填不上你的资料：$(error_text "$result")"
 }
 
