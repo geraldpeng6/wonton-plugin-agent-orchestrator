@@ -6,10 +6,19 @@ on:
     branches: [main]
   # 手动入口：想合并前跑一遍冒烟时，从这里触发（冒烟作业只在 Dependabot 的 PR 和手动触发时跑）。
   workflow_dispatch:
+    inputs:
+      core-image:
+        description: 核心镜像（如 ghcr.io/geraldpeng6/wonton-core:sha-<完整 40 位提交号>，钉在某次合并上复测；留空用套件默认的 :main）
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 jobs:
   check:
-    uses: ./.github/workflows/plugin-check.yml
+    uses: geraldpeng6/wonton-plugin-template/.github/workflows/plugin-check.yml@ef4f6b3e276c7fa64a1db089833a6344e59983f8
+    with:
+      # pull_request 和 push 触发时没有这个输入，为空，走套件默认。
+      core-image: ${{ inputs.core-image }}

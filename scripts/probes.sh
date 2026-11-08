@@ -3,7 +3,8 @@
 # smoke.sh 和 dev.sh probes 共用这份逻辑，两边都不复制。调用方先设好：
 #   PROBES_LOG     探针输出和失败详情追加到这里，FAIL 行摘录末尾
 #   SMOKE_DIR      工作区目录（跑 scripts/dev.sh、找 smoke-probes.sh 的地方）
-#   SMOKE_STATE    开发环境的状态目录（.wonton，里面有 .env）
+#   SMOKE_DEV_STATE 开发环境的状态目录（.wonton，里面有 .env），套件自己用，不给插件钩子
+#   SMOKE_STATE    数据标记文件：调用方先建成空文件，data_write 覆盖写、data_check 读（插件钩子只认它是文件）
 #   SMOKE_INSTANCE 实例名
 #   SMOKE_JAR      用户会话 cookie 的存放文件
 #   SMOKE_TOOLS    MCP tools/list 的输出文件
@@ -23,17 +24,17 @@ na() { echo "N/A  $1：$2"; }
 
 # 探针里跑 dev.sh 子命令都走这里：cd 到工作区，指到自己的状态目录和实例。
 probes_dev() {
-  (cd "$SMOKE_DIR" && WONTON_DEV_STATE="$SMOKE_STATE" WONTON_INSTANCE="$SMOKE_INSTANCE" nice -n 19 scripts/dev.sh "$@")
+  (cd "$SMOKE_DIR" && WONTON_DEV_STATE="$SMOKE_DEV_STATE" WONTON_INSTANCE="$SMOKE_INSTANCE" nice -n 19 scripts/dev.sh "$@")
 }
 
 # 装 tag、reinstall 限时：卡住时如实记 FAIL，不把名额占死。
 probes_dev_t() { # <秒数> <dev.sh 参数…>
   local secs="$1"; shift
-  (cd "$SMOKE_DIR" && WONTON_DEV_STATE="$SMOKE_STATE" WONTON_INSTANCE="$SMOKE_INSTANCE" nice -n 19 timeout "$secs" scripts/dev.sh "$@")
+  (cd "$SMOKE_DIR" && WONTON_DEV_STATE="$SMOKE_DEV_STATE" WONTON_INSTANCE="$SMOKE_INSTANCE" nice -n 19 timeout "$secs" scripts/dev.sh "$@")
 }
 
 probes_setting() { # 状态目录 .env 里的一项设置
-  sed -n "s/^$1=//p" "$SMOKE_STATE/.env" | tail -1
+  sed -n "s/^$1=//p" "$SMOKE_DEV_STATE/.env" | tail -1
 }
 
 # 插件钩子限时跑：函数开在子 shell 里（能看见调用方的函数和变量），超时就杀掉。
@@ -315,7 +316,10 @@ probes_cmd() { # dev.sh probes 的入口：对开发环境里装着的工作区�
   PROBES_LOG="$state/probes.log"
   : >"$PROBES_LOG"
   SMOKE_DIR="$root"
-  SMOKE_STATE="$state"
+  SMOKE_DEV_STATE="$state"
+  # 标记文件跨几次 dev.sh probes 保留：先跑 data_write、改完插件再跑 data_check 也读得到。
+  SMOKE_STATE="$state/probes-data-marker"
+  [[ -f "$SMOKE_STATE" ]] || : >"$SMOKE_STATE"
   SMOKE_INSTANCE="$instance"
   SMOKE_JAR="$(session_jar)"
   SMOKE_TOOLS="$state/probes-tools.json"
