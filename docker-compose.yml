@@ -47,7 +47,7 @@ services:
       WONTON_AGENT_WORKSPACE: /workspace
       WONTON_MATRIX_HOMESERVER: ${WONTON_MATRIX_HOMESERVER:?需要 Matrix 地址}
       WONTON_MATRIX_ACCESS_TOKEN: ${WONTON_MATRIX_ACCESS_TOKEN:?需要 Bot 的 Matrix 访问令牌}
-      WONTON_MATRIX_ALLOWED_USERS: ${WONTON_MATRIX_ALLOWED_USERS:?需要 Bot 听话的 Matrix 用户 ID}
+      WONTON_MATRIX_ALLOWED_USERS: ${WONTON_MATRIX_ALLOWED_USERS:-${WONTON_MATRIX_OWNER}}
       WONTON_MATRIX_HOME_ROOM: ${WONTON_MATRIX_HOME_ROOM:?需要主人与 Bot 的主房间}
       WONTON_MCP_URL: ${WONTON_MCP_URL:?需要 MCP 总线地址}
       # 新会话切到这个模式：改文件、跑命令经确认卡片问主人。
@@ -63,7 +63,7 @@ services:
       start_interval: 2s
 
 x-wonton:
-  spec: "0.9"
+  spec: "0.8"
   id: ai.agent-orchestrator
   version: 0.1.0
   kind: agent
