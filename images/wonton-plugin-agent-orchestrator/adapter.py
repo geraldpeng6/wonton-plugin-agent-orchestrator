@@ -35,6 +35,7 @@ PROJECT_DIR = ao.PROJECT_DIR
 HARNESS = ao.HARNESS
 POLL_SECONDS = 1.0
 PROMPT_TIMEOUT = 900.0
+START_GRACE = 60.0
 
 STATE_WORKING = "working"
 STATE_NEEDS_ANSWER = "needs_answer"
@@ -425,7 +426,11 @@ def run_prompt(request_id, session_id, text):
         ensure_agent_running(session_id)
         send_message(session_id, text)
     deadline = time.monotonic() + PROMPT_TIMEOUT
+    sent_at = time.monotonic()
     stop = "end_turn"
+    busy = False
+    # 刚发出时活动状态可能还是 idle（工人进程正在起），要等它离开 idle 再等它回来，
+    # 否则整轮在模型还没说话时就结束了。START_GRACE 内一直 idle 的是真没动。
     while time.monotonic() < deadline:
         time.sleep(0.5)
         session = get_session(session_id)
@@ -434,7 +439,10 @@ def run_prompt(request_id, session_id, text):
             break
         state = (session.get("activity") or {}).get("state")
         if state in ("idle", "exited"):
-            break
+            if busy or time.monotonic() - sent_at > START_GRACE:
+                break
+            continue
+        busy = True
         if state == "blocked" and time.monotonic() + 2 > deadline:
             break
     respond(request_id, {"stopReason": stop})
