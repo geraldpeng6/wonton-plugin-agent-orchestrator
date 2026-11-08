@@ -34,7 +34,9 @@ from transport import (
 PROJECT_DIR = ao.PROJECT_DIR
 HARNESS = ao.HARNESS
 POLL_SECONDS = 1.0
-PROMPT_TIMEOUT = 900.0
+# 编排器首轮要读完 skill、建仓库、问问题、等回答再 spawn，模型慢时整条链超过 15 分钟；
+# 中途打断会把任务杀在半路，宁可让调用方按自己的等待超时。
+PROMPT_TIMEOUT = 1800.0
 START_GRACE = 60.0
 
 STATE_WORKING = "working"
