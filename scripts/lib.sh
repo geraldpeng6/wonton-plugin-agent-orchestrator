@@ -5,8 +5,8 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # 开发环境：compose 文件、密钥、数据，都不提交（.gitignore）。WONTON_DEV_STATE 给冒烟用另一份目录。
 state="${WONTON_DEV_STATE:-$root/.wonton}"
 env_file="$state/.env"
-# 没有开发环境时，检查和打包用这个核心镜像。
-default_image="ghcr.io/geraldpeng6/wonton-core:beta"
+# 没有开发环境时，检查和打包用这个核心镜像：main 每次合并都会更新，插件跟着主干的规范走，不等发版。
+default_image="ghcr.io/geraldpeng6/wonton-core:main"
 
 die() {
   echo "$*" >&2
