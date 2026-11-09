@@ -12,7 +12,7 @@
 #   scripts/dev.sh token                      用户令牌：浏览器登录和调接口都用它
 #   scripts/dev.sh session [--new]            建立用户会话（--new 重建），cookie 存在 .wonton/session.cookies
 #   scripts/dev.sh web [--jar <文件>] [--fresh] [--sso] [<路径> [<curl 参数>…]]
-#                                             以用户的身份请求插件网页；--sso 会提交 JS 自动表单并跟完重定向
+#                                             以用户的身份请求插件网页；--sso 会从清单 webui.path 的入口提交 JS 自动表单并跟完重定向
 #   scripts/dev.sh api <方法> <路径> [<curl 参数>…] 带用户令牌调用核心管理接口
 #   scripts/dev.sh egress <地址>                读取设置后用同样的 restarts 和直连网段设置出口代理
 #   scripts/dev.sh mcp list                   Bot 经 MCP 总线能调到的工具（JSON）
@@ -20,14 +20,14 @@
 #   scripts/dev.sh mcp --direct list|call …   直连工作区清单的 MCP 服务，只调试插件本身，不走总线权限和确认
 #   scripts/dev.sh approve [--watch]          用主人令牌批准确认卡片；--watch 持续批准，Ctrl-C 停止
 #   scripts/dev.sh smoke                      对工作区的插件跑合并前的端到端冒烟：起一套一次性实例，跑完清理
-#   scripts/dev.sh probes [<探针名>…]          对装着的工作区插件跑冒烟探针（web_assert、identity_check、mcp），不起新实例；给了名字就只跑那几项
+#   scripts/dev.sh probes [<探针名>…]          对装着的工作区插件跑冒烟探针（web_assert、identity_check、mcp、data_write、data_check），不起新实例；给了名字就只跑那几项
 #   scripts/dev.sh pair                       在终端里出配对二维码，给 App 用
 #   scripts/dev.sh down                       停下核心，数据都留着；插件的容器由核心管，照常运行
 #   scripts/dev.sh reset                      删掉当前实例的插件容器和网络，保留核心和 .wonton 数据
 #   scripts/dev.sh purge [--yes]              删掉整个开发环境；非交互执行必须带 --yes
 #   scripts/dev.sh kit-update [<ref>]          更新开发套件（默认 main），不需要 Docker
 #
-# 第一次 up 时可以用环境变量定下：WONTON_CORE_IMAGE（核心镜像，默认 ghcr.io/geraldpeng6/wonton-core:beta）、
+# 第一次 up 时可以用环境变量定下：WONTON_CORE_IMAGE（核心镜像，默认 ghcr.io/geraldpeng6/wonton-core:main）、
 # WONTON_INSTANCE（实例名）、WONTON_PORT（网页端口，隧道用下一个端口）、WONTON_PULL=never（用本机构建的核心镜像，
 # 不拉取）。之后改 .wonton/.env 再 up。WONTON_DEV_CORE_SUBNET（如 10.214.1.0/24）让核心网络用这个子网，不占 Docker 的
 # 默认地址池（只有约 30 个网络，几套栈共用一台 Docker 时会用光）；写进 .wonton/compose.subnet.yaml，栈拆掉之前一直沿用。
@@ -156,8 +156,6 @@ compose() {
   [[ -z "$core_subnet" ]] ||
     printf 'networks:\n  core:\n    ipam:\n      config:\n        - subnet: %s\n' "$core_subnet" >"$state/compose.subnet.yaml"
   [[ ! -f "$state/compose.subnet.yaml" ]] || files+=(-f "$state/compose.subnet.yaml")
-  # 核心镜像的 init 生成的 tuwunel 只挂 tuwunel.toml，可配置里的证书写的是安装目录下的绝对路径，
-  # 容器里看不见（2026-11-07 带联邦 TLS 的核心镜像起不来）。这里给同一路径补一份只读挂载。
   docker compose -p "wonton-$instance" "${files[@]}" "$@"
 }
 
@@ -179,17 +177,6 @@ up() {
   write_settings
   info "生成密钥和配置（已有的沿用）"
   docker run --rm --user "$(id -u):$(id -g)" -v "$state:$state" "$image" init "$state" "$instance.wonton.localhost" >/dev/null
-  # 核心镜像的 init 生成的 tuwunel 只挂 tuwunel.toml，可配置里的证书写的是安装目录下的绝对路径，容器里看不见
-  # （2026-11-07 带联邦 TLS 的核心镜像起不来）。直接补进 compose.yaml：冒烟脚本重启时会自己重新读这份文件。
-  python3 - "$state/compose.yaml" <<'PY'
-import sys
-path = sys.argv[1]
-lines = open(path).read().split("\n")
-start = lines.index("  tuwunel:")
-volumes = lines.index("    volumes:", start)
-lines.insert(volumes + 1, "      - ${WONTON_INSTALL_DIR}/secrets:${WONTON_INSTALL_DIR}/secrets:ro")
-open(path, "w").write("\n".join(lines))
-PY
   info "启动核心、身份提供方和 Matrix 服务器（第一次要拉镜像，几分钟）"
   compose up -d --wait --wait-timeout 600 || die "没有在 10 分钟内就绪，看看日志：scripts/dev.sh logs"
   need_env
@@ -255,7 +242,7 @@ PY
 # 名字时一样。没有这个接口（404）的核心从 .env 读邮箱。
 fill_profile() {
   local result status body
-  result="$(api GET /_wonton/api/owner-profile -w '\n%{http_code}' 2>/dev/null)" || true
+  result="$(api GET /_wonton/api/me -w '\n%{http_code}' 2>/dev/null)" || true
   status="${result##*$'\n'}"
   body="${result%$'\n'*}"
   [[ "$status" != 404 ]] || return 0
@@ -263,13 +250,13 @@ fill_profile() {
   body="$(python3 - "$body" "$owner_email" <<'PY'
 import json, sys
 profile = json.loads(sys.argv[1])
-if not profile["email"]:
-    print(json.dumps({"display_name": profile["display_name"] or profile["username"], "email": sys.argv[2]}))
+if not profile.get("email"):
+    print(json.dumps({"display_name": profile.get("display_name") or profile["username"], "email": sys.argv[2]}))
 PY
   )" || die "看不懂核心回的资料：$result"
   [[ -n "$body" ]] || return 0
   info "填上你的资料（$owner_email）"
-  result="$(api PUT /_wonton/api/owner-profile -H 'Content-Type: application/json' -d "$body")" ||
+  result="$(api PUT /_wonton/api/me -H 'Content-Type: application/json' -d "$body")" ||
     die "填不上你的资料：$(error_text "$result")"
 }
 
@@ -411,20 +398,25 @@ logs() {
   docker logs -f --tail 200 "wonton-$instance--${id//./-}--$1"
 }
 
-plugin_web_url() {
+# 插件网页入口：核心把清单的 webui.path（没写就是 /）拼在域名后面，从这里开始走应用的登录链。
+plugin_web_entry() {
   local id="$1" list
   list="$(api GET /_wonton/api/plugins)" || die "列不出插件：$(error_text "$list")"
   python3 - "$list" "$id" <<'PY'
-import urllib.parse
 import json, sys
 plugin = next((p for p in json.loads(sys.argv[1])["plugins"] if p["id"] == sys.argv[2]), None)
 if plugin is None:
     sys.exit(f"{sys.argv[2]} 还没装：先 scripts/dev.sh install")
 if not plugin.get("web_url"):
     sys.exit(f"{sys.argv[2]} 没有网页入口（清单里没写 webui）")
-parts = urllib.parse.urlsplit(plugin["web_url"])
-print(f"{parts.scheme}://{parts.netloc}")
+print(plugin["web_url"])
 PY
+}
+
+plugin_web_url() {
+  local entry
+  entry="$(plugin_web_entry "$1")" || exit 1
+  python3 -c 'import urllib.parse, sys; p = urllib.parse.urlsplit(sys.argv[1]); print(f"{p.scheme}://{p.netloc}")' "$entry"
 }
 
 session_jar() {
@@ -506,19 +498,19 @@ PY
 
 # 登进核心，再走一遍插件网页的登录跳转；--sso 还会跟完 JS 自动提交的隐藏字段表单。
 session_into() {
-  local jar="$1" new="$2" sso="${3:-}" owner url
+  local jar="$1" new="$2" sso="${3:-}" owner entry
   [[ -n "$sso" ]] && new=1
   mkdir -p "$(dirname "$jar")"
   [[ -n "$new" ]] && rm -f "$jar"
   [[ -f "$jar" ]] && return 0
   owner="$(token)"
-  url="$(plugin_web_url "$(plugin_id)")"
+  entry="$(plugin_web_entry "$(plugin_id)")"
   curl -sS --noproxy '*' --fail-with-body -o /dev/null -c "$jar" --data-urlencode "token=$owner" \
     "$base_url/_wonton/login" || die "用户令牌登录不了核心"
   if [[ -n "$sso" ]]; then
-    sso_form_login "$jar" "$url/"
+    sso_form_login "$jar" "$entry"
   else
-    curl -sS --noproxy '*' -o /dev/null -L -b "$jar" -c "$jar" -H 'Accept: text/html' "$url/" ||
+    curl -sS --noproxy '*' -o /dev/null -L -b "$jar" -c "$jar" -H 'Accept: text/html' "$entry" ||
       die "走不通插件网页的登录跳转"
   fi
 }
@@ -690,90 +682,16 @@ purge() {
   echo "删掉了实例 $instance"
 }
 
-kit_commit() {
-  local ref="$1" refs sha name branch="" tag="" peeled="" head=""
-  refs="$(git ls-remote https://github.com/geraldpeng6/wonton-plugin-template.git \
-    "$ref" "$ref^{}" "refs/heads/$ref" "refs/tags/$ref" "refs/tags/$ref^{}")" ||
-    die "取不到开发套件的引用 $ref"
-  while read -r sha name; do
-    case "$name" in
-      "refs/heads/${ref#refs/heads/}") branch="$sha" ;;
-      "refs/tags/${ref#refs/tags/}") tag="$sha" ;;
-      "refs/tags/${ref#refs/tags/}^{}") peeled="$sha" ;;
-      HEAD) head="$sha" ;;
-    esac
-  done <<<"$refs"
-  [[ -z "$branch" || -z "$tag" ]] || die "开发套件的分支和 tag 同名：$ref，请写完整 refs/heads/ 或 refs/tags/ 引用"
-  sha="${branch:-${peeled:-${tag:-$head}}}"
-  # ls-remote 只列引用；完整提交 SHA 已经固定版本，后续下载仍逐个确认文件存在。
-  if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then sha="$ref"; fi
-  [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || die "找不到开发套件的引用 $ref"
-  printf '%s\n' "$sha"
-}
-
-kit_update() (
-  [[ $# -le 1 ]] || usage
-  need git curl
-  local origin sha stage path workflow
-  origin="$(git -C "$root" remote get-url origin 2>/dev/null || true)"
-  case "${origin%.git}" in
-    https://github.com/geraldpeng6/wonton-plugin-template | \
-      http://github.com/geraldpeng6/wonton-plugin-template | \
-      git@github.com:geraldpeng6/wonton-plugin-template | \
-      ssh://git@github.com/geraldpeng6/wonton-plugin-template)
-      echo "这里就是套件的源头，不需要 kit-update；用 git pull 更新。"
-      exit 0
-      ;;
-  esac
-  sha="$(kit_commit "${1:-main}")" || exit 1
-  stage="$(mktemp -d "$root/.kit-update.XXXXXXXX")"
-  trap 'rm -rf "$stage"' EXIT
-  mkdir -p "$stage/scripts"
-  local base="https://raw.githubusercontent.com/geraldpeng6/wonton-plugin-template/$sha"
-  info "下载开发套件 $sha"
-  curl -fsSL "$base/scripts/kit.files" -o "$stage/scripts/kit.files" || die "取不到开发套件清单（$sha）"
-  local -a files=()
-  while IFS= read -r path || [[ -n "$path" ]]; do
-    [[ "$path" =~ ^[a-zA-Z0-9_./-]+$ && "$path" != /* && "/$path/" != */../* && "/$path/" != */./* ]] ||
-      die "开发套件清单里的路径不合法：$path"
-    [[ " ${files[*]} " != *" $path "* ]] || die "开发套件清单里重复的路径：$path"
-    files+=("$path")
-    [[ "$path" != scripts/kit.files ]] || continue
-    mkdir -p "$stage/$(dirname "$path")"
-    curl -fsSL "$base/$path" -o "$stage/$path" || die "取不到开发套件文件 $path（$sha），没有替换文件"
-    case "$path" in scripts/*.sh) chmod +x "$stage/$path" ;; esac
-  done <"$stage/scripts/kit.files"
-  if ! grep -qxF scripts/kit.files "$stage/scripts/kit.files" ||
-    ! grep -qxF .github/workflows/check.yml "$stage/scripts/kit.files"; then
-    die "开发套件清单缺少 kit.files 或 check.yml"
-  fi
-  workflow="$stage/.github/workflows/check.yml"
-  sed -E "s~uses: (\./|geraldpeng6/wonton-plugin-template/)\.github/workflows/plugin-check\.yml(@[^[:space:]]+)?~uses: geraldpeng6/wonton-plugin-template/.github/workflows/plugin-check.yml@$sha~" \
-    "$workflow" >"$stage/check.yml"
-  mv "$stage/check.yml" "$workflow"
-  grep -qF "uses: geraldpeng6/wonton-plugin-template/.github/workflows/plugin-check.yml@$sha" "$workflow" ||
-    die "开发套件的 check.yml 没有可固定的工作流引用，没有替换文件"
-  printf '%s\n' "$sha" >"$stage/scripts/KIT"
-  # 所有下载和改写完成后才替换；临时目录在仓库内，mv 不跨文件系统。
-  for path in "${files[@]}" scripts/KIT; do
-    mkdir -p "$root/$(dirname "$path")"
-  done
-  for path in "${files[@]}" scripts/KIT; do
-    mv "$stage/$path" "$root/$path"
-  done
-  if [[ -f "$root/.github/workflows/plugin-check.yml" ]]; then
-    rm "$root/.github/workflows/plugin-check.yml"
-    info "已删除本地 .github/workflows/plugin-check.yml，CI 改为调用模板的固定提交。"
-  fi
-  git -C "$root" diff --stat
-)
-
 if [[ "${1:-}" == kit-update ]]; then
+  # shellcheck source=scripts/dev-kit.sh
+  . "$root/scripts/dev-kit.sh"
   kit_update "${@:2}"
   exit
 fi
 
 need docker curl python3
+# 起容器前剥掉宿主机的 Docker 客户端代理（见 lib.sh 的 strip_docker_proxies；空参数=用 $state 下的默认目录）。
+strip_docker_proxies ""
 case "${1:-}" in
   up) up ;;
   install) install_plugin "${@:2}" ;;

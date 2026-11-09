@@ -1,0 +1,69 @@
+#!/bin/sh
+# 底座在容器启动时调：apply 把模型网关写成工人（qwen）读的环境变量和配置，clear 删掉。
+# 环境变量落在 /data/agent/agent.env，由 ao-acp 在起 AO 守护进程前 source；值不进日志。
+# Wonton MCP 总线（有 tools 权限时注入）写进 qwen 的 MCP 配置，编排器和工人都能用 Wonton 工具。
+set -eu
+
+env_file=/data/agent/agent.env
+settings="${HOME:-/data/agent/home}/.qwen/settings.json"
+
+merge_settings() { # <模式>：settings.json 里只动本插件自己的键
+    python3 - "$settings" "$1" "${WONTON_MCP_URL:-}" <<'PY'
+import json, os, sys
+
+path, mode, mcp_url = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    with open(path) as f:
+        data = json.load(f)
+except (OSError, ValueError):
+    data = {}
+security = data.get("security") if isinstance(data.get("security"), dict) else {}
+auth = security.get("auth") if isinstance(security.get("auth"), dict) else {}
+if mode == "apply":
+    auth["selectedType"] = "openai"
+    security["auth"] = auth
+    data["security"] = security
+servers = data.get("mcpServers")
+if not isinstance(servers, dict):
+    servers = {}
+if mode == "apply" and mcp_url:
+    servers["wonton"] = {"transport": "http", "httpUrl": mcp_url}
+else:
+    servers.pop("wonton", None)
+if servers:
+    data["mcpServers"] = servers
+else:
+    data.pop("mcpServers", None)
+os.makedirs(os.path.dirname(path), exist_ok=True)
+tmp = path + ".tmp"
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w") as f:
+    json.dump(data, f, ensure_ascii=False, indent=1)
+os.replace(tmp, path)
+PY
+}
+
+case "$1" in
+apply)
+    for name in WONTON_MODEL_BASE_URL WONTON_MODEL_API_KEY WONTON_MODEL_DEFAULT; do
+        eval "val=\${$name:-}"
+        [ -n "$val" ] || { echo "缺少 $name，网关变量不全" >&2; exit 1; }
+    done
+    umask 077
+    {
+        printf 'OPENAI_BASE_URL=%s\n' "$WONTON_MODEL_BASE_URL"
+        printf 'OPENAI_API_KEY=%s\n' "$WONTON_MODEL_API_KEY"
+        printf 'OPENAI_MODEL=%s\n' "$WONTON_MODEL_DEFAULT"
+    } > "$env_file.tmp"
+    mv "$env_file.tmp" "$env_file"
+    merge_settings apply
+    ;;
+clear)
+    rm -f "$env_file"
+    merge_settings clear
+    ;;
+*)
+    echo "用法：gateway apply|clear" >&2
+    exit 1
+    ;;
+esac

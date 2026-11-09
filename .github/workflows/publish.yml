@@ -1,0 +1,48 @@
+# 在 GitHub 托管的机器上执行 scripts/publish.sh，镜像用 GITHUB_TOKEN 推到 ghcr.io，不要本机登录镜像仓库。
+# 手动触发（Actions → 发布 → Run workflow），不在推 tag 时触发：publish.sh 先推镜像、把摘要写回 compose 并提交，
+# 再在那个提交上打 tag；推 tag 触发时 tag 已经指向没写摘要的提交，而发布过的 tag 不能移动。
+# arm64 用 QEMU 模拟：镜像里多半只是装包和下载上游的二进制，模拟不慢；分到原生 arm 机器上要拆开构建再合并清单，
+# 本机和这里就不能共用一个脚本。
+name: 发布
+
+on:
+  workflow_dispatch:
+    inputs:
+      official:
+        description: 按官方索引的要求检查（--official）
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: publish
+
+jobs:
+  publish:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: 发布
+        env:
+          OFFICIAL: ${{ inputs.official }}
+          ACTOR: ${{ github.actor }}
+          ACTOR_ID: ${{ github.actor_id }}
+        run: |
+          git config user.name "$ACTOR"
+          git config user.email "$ACTOR_ID+$ACTOR@users.noreply.github.com"
+          if [[ "$OFFICIAL" == true ]]; then scripts/publish.sh --official; else scripts/publish.sh; fi
