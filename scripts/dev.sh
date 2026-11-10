@@ -28,8 +28,10 @@
 #   scripts/dev.sh kit-update [<ref>]          更新开发套件（默认 main），不需要 Docker
 #
 # 第一次 up 时可以用环境变量定下：WONTON_CORE_IMAGE（核心镜像，默认 ghcr.io/geraldpeng6/wonton-core:main）、
-# WONTON_INSTANCE（实例名）、WONTON_PORT（网页端口，隧道用下一个端口）、WONTON_PULL=never（用本机构建的核心镜像，
-# 不拉取）。之后改 .wonton/.env 再 up。WONTON_DEV_CORE_SUBNET（如 10.214.1.0/24）让核心网络用这个子网，不占 Docker 的
+# WONTON_INSTANCE（实例名）、WONTON_PORT（网页端口，隧道用下一个端口）、WONTON_DEV_DOMAIN（基础域名，默认
+# <实例名>.wonton.localhost）、WONTON_PULL=never（用本机构建的核心镜像，不拉取）。之后改 .wonton/.env 再 up。
+# 对着别的栈跑 probes、api、session 时，在 .wonton/.env 写那套栈的 WONTON_BASE_DOMAIN：实例名只是资源名前缀，
+# 不是域名。WONTON_DEV_CORE_SUBNET（如 10.214.1.0/24）让核心网络用这个子网，不占 Docker 的
 # 默认地址池（只有约 30 个网络，几套栈共用一台 Docker 时会用光）；写进 .wonton/compose.subnet.yaml，栈拆掉之前一直沿用。
 set -euo pipefail
 # forget_environment 会清掉所有 WONTON_*，先留一份。
@@ -93,17 +95,23 @@ first_settings() {
   fi
   source="${WONTON_CORE_IMAGE:-$default_image}"
   pull="${WONTON_PULL:-}"
-  owner_email="${WONTON_OWNER_EMAIL:-owner@$instance.wonton.localhost}"
+  domain="${WONTON_DEV_DOMAIN:-$instance.wonton.localhost}"
+  owner_email="${WONTON_OWNER_EMAIL:-owner@$domain}"
 }
 
+# 核心的基础域名，不是实例名：实例名只是资源名前缀。别的栈写 .wonton/.env 的 WONTON_BASE_DOMAIN；从主仓库抄成
+# WONTON_DEV_DOMAIN 的也认。都没写时按实例名兜底，和 up 起的栈一致。
 load_settings() {
   instance="$(setting WONTON_INSTANCE)"
   [[ "$instance" =~ ^[a-z0-9]{1,16}$ ]] || die "实例名 $instance 不合法：只能用小写字母和数字，最长 16 个字符"
   port="$(setting WONTON_PORT)"
+  domain="$(setting WONTON_BASE_DOMAIN)"
+  [[ -n "$domain" ]] || domain="$(setting WONTON_DEV_DOMAIN)"
+  [[ -n "$domain" ]] || domain="$instance.wonton.localhost"
   source="$(setting WONTON_CORE_SOURCE)"
   pull="${WONTON_PULL:-$(setting WONTON_PULL)}"
   owner_email="$(setting WONTON_OWNER_EMAIL)"
-  [[ -n "$owner_email" ]] || owner_email="owner@$instance.wonton.localhost"
+  [[ -n "$owner_email" ]] || owner_email="owner@$domain"
 }
 
 write_settings() {
@@ -116,7 +124,7 @@ WONTON_CORE_IMAGE=$image
 WONTON_PULL=$pull
 WONTON_INSTANCE=$instance
 WONTON_CORE_CONTAINER=wonton-$instance--core
-WONTON_BASE_DOMAIN=$instance.wonton.localhost
+WONTON_BASE_DOMAIN=$domain
 WONTON_PORT=$port
 WONTON_TUNNEL_PORT=$((port + 1))
 WONTON_INSTALL_DIR=$state
@@ -176,12 +184,12 @@ up() {
   check_core_image "$image"
   write_settings
   info "生成密钥和配置（已有的沿用）"
-  docker run --rm --user "$(id -u):$(id -g)" -v "$state:$state" "$image" init "$state" "$instance.wonton.localhost" >/dev/null
+  docker run --rm --user "$(id -u):$(id -g)" -v "$state:$state" "$image" init "$state" "$domain" >/dev/null
   info "启动核心、身份提供方和 Matrix 服务器（第一次要拉镜像，几分钟）"
   compose up -d --wait --wait-timeout 600 || die "没有在 10 分钟内就绪，看看日志：scripts/dev.sh logs"
   need_env
   fill_profile
-  echo "开发环境就绪：http://$instance.wonton.localhost:$port/（实例 $instance）"
+  echo "开发环境就绪：http://$domain:$port/（实例 $instance）"
   echo "浏览器打开它，用 scripts/dev.sh token 输出的用户令牌登录；接着 scripts/dev.sh install 装插件"
 }
 
@@ -191,7 +199,7 @@ need_env() {
   load_settings
   forget_environment
   core="wonton-$instance--core"
-  base_url="http://$instance.wonton.localhost:$port"
+  base_url="http://$domain:$port"
 }
 
 token() {
@@ -200,14 +208,13 @@ token() {
 }
 
 # 调核心的管理接口。*.localhost 由 curl 自己解析到本机，不经代理。常在 $(…) 里调用，bash 在那里不带 set -e，
-# 所以读不到令牌时要自己退出。
+# 所以读不到令牌时要自己退出。接口 600 秒（SMOKE_API_MAX_TIME），核心不回时调用方不跟着挂死。
 api() {
   local method="$1" path="$2" owner
   shift 2
   owner="$(token)" || exit 1
-  curl -sS --noproxy '*' --fail-with-body -X "$method" \
-    -H "Authorization: Bearer $owner" -H "Accept-Language: zh-CN,zh;q=0.9" \
-    "$@" "$base_url$path"
+  curl_t "$SMOKE_API_MAX_TIME" "$base_url$path" --noproxy '*' -X "$method" \
+    -H "Authorization: Bearer $owner" -H "Accept-Language: zh-CN,zh;q=0.9" "$@"
 }
 
 api_command() {
@@ -430,17 +437,17 @@ sso_form_login() {
   for _ in $(seq 1 8); do
     page_file="$(mktemp)"
     if [[ "$method" == GET ]]; then
-      effective="$(curl -sS --noproxy '*' --fail-with-body -L -b "$jar" -c "$jar" \
-        -H 'Accept: text/html' -o "$page_file" -w '%{url_effective}' "$request_url")" || {
+      effective="$(curl_t "$SMOKE_WEB_MAX_TIME" "$request_url" --noproxy '*' -L -b "$jar" -c "$jar" \
+        -H 'Accept: text/html' -o "$page_file" -w '%{url_effective}')" || {
         rm -f "$page_file"
-        die "读取 SSO 页面失败"
+        die "读取 SSO 页面失败（$request_url）"
       }
     else
-      effective="$(curl -sS --noproxy '*' --fail-with-body -L -b "$jar" -c "$jar" \
+      effective="$(curl_t "$SMOKE_WEB_MAX_TIME" "$request_url" --noproxy '*' -L -b "$jar" -c "$jar" \
         -H 'Accept: text/html' -o "$page_file" -w '%{url_effective}' \
-        --data "$data" "$request_url")" || {
+        --data "$data")" || {
         rm -f "$page_file"
-        die "提交 SSO 表单失败"
+        die "提交 SSO 表单失败（$request_url）"
       }
     fi
     form="$(python3 - "$page_file" "$effective" <<'PY'
@@ -503,15 +510,16 @@ session_into() {
   mkdir -p "$(dirname "$jar")"
   [[ -n "$new" ]] && rm -f "$jar"
   [[ -f "$jar" ]] && return 0
-  owner="$(token)"
+  owner="$(token)" || exit 1
   entry="$(plugin_web_entry "$(plugin_id)")"
-  curl -sS --noproxy '*' --fail-with-body -o /dev/null -c "$jar" --data-urlencode "token=$owner" \
-    "$base_url/_wonton/login" || die "用户令牌登录不了核心"
+  curl_t "$SMOKE_WEB_MAX_TIME" "$base_url/_wonton/login" --noproxy '*' -o /dev/null -c "$jar" \
+    --data-urlencode "token=$owner" ||
+    die "用户令牌登录不了核心（POST $base_url/_wonton/login）"
   if [[ -n "$sso" ]]; then
     sso_form_login "$jar" "$entry"
   else
-    curl -sS --noproxy '*' -o /dev/null -L -b "$jar" -c "$jar" -H 'Accept: text/html' "$entry" ||
-      die "走不通插件网页的登录跳转"
+    curl_t "$SMOKE_WEB_MAX_TIME" "$entry" --noproxy '*' -o /dev/null -L -b "$jar" -c "$jar" -H 'Accept: text/html' ||
+      die "走不通插件网页的登录跳转（GET $entry）"
   fi
 }
 
@@ -527,7 +535,7 @@ session() {
   session_jar
 }
 
-# 带用户会话请求插件网页，其余参数原样交给 curl。`--sso` 会跟完应用登录页的隐藏字段表单。
+# 带用户会话请求插件网页，其余参数原样交给 curl（网页 120 秒，SMOKE_WEB_MAX_TIME）。`--sso` 会跟完应用登录页的隐藏字段表单。
 web() {
   local path="/" jar fresh="" sso="" url
   jar="$(session_jar)"
@@ -544,7 +552,7 @@ web() {
   [[ "$path" == /* ]] || usage
   session_into "$jar" "$fresh" "$sso"
   url="$(plugin_web_url "$(plugin_id)")"
-  curl -sS --noproxy '*' --fail-with-body -b "$jar" -c "$jar" "$@" "$url$path"
+  curl_t "$SMOKE_WEB_MAX_TIME" "$url$path" --noproxy '*' -b "$jar" -c "$jar" "$@"
 }
 
 if [[ "${1:-}" != kit-update ]]; then
