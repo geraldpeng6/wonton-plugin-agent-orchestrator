@@ -2,7 +2,7 @@
 # shellcheck disable=SC2154 # root、instance 由 dev.sh 加载设置。
 # 由 dev.sh 加载，直连插件网络时复用已有的 MCP 客户端。
 mcp_direct() {
-  local sub="$1" facts endpoint id service url container network image client
+  local sub="$1" facts endpoint id service url container network image client gw
   facts="$(docker compose -f "$root/docker-compose.yml" config --no-interpolate --format json)" ||
     die "解析不了工作区的 docker-compose.yml"
   endpoint="$(python3 - "$facts" <<'PY'
@@ -23,8 +23,11 @@ PY
   docker network inspect "$network" >/dev/null 2>&1 ||
     die "找不到插件网络 $network：直连要求插件使用核心管理的独立网络"
   # 不在插件网络里下载依赖：它可能禁止出网。Hermes 自带 SDK；只读复用，不改它的容器或文件。
-  image="$(docker container inspect --format '{{.Image}}' "wonton-$instance--com-nousresearch-hermes--gateway" 2>/dev/null)" ||
-    die "没有 Hermes gateway：直连复用它的镜像和 MCP SDK，先装上 Hermes"
+  # gateway 是 Bot 服务：核心把容器命名成 `<插件网络>--gateway--<Bot 名>`，旧核心没有后缀，按前缀找在跑的那个。
+  gw="$(running_container "wonton-$instance--com-nousresearch-hermes--gateway")" ||
+    die "没有在跑的 Hermes gateway：直连复用它的镜像和 MCP SDK，先装上 Hermes"
+  image="$(docker container inspect --format '{{.Image}}' "$gw" 2>/dev/null)" ||
+    die "读不到 Hermes gateway 的镜像（$gw）"
   client="wonton-$instance--mcp-client-$(random_hex 4)"
   shift
   docker run --rm -i --name "$client" --label "wonton.instance=$instance" --network "$network" \

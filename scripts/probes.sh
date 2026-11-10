@@ -282,7 +282,7 @@ probes_identity() { # 用户身份能用：应用认出的是用户管理员
   elif [[ "$IDENTITY_NA" == 1 ]]; then
     na 用户身份能用 "${SMOKE_NOTE:-应用没有可断言的用户体系}"
   elif ! declare -F identity_check >/dev/null; then
-    fail 用户身份能用 "没写探测：在 scripts/smoke-probes.sh 里写 identity_check（调应用自己的当前用户接口，断言是用户管理员；没有用户体系就写 IDENTITY_NA=1）"
+    fail 用户身份能用 "没写探测：在 scripts/smoke-probes.sh 里写 identity_check（调应用自己的当前用户接口，断言是用户管理员、不管应用里有没有数据；没有用户体系就写 IDENTITY_NA=1）"
   elif identity_check >>"$PROBES_LOG" 2>&1; then
     pass 用户身份能用 "sso=$SMOKE_SSO：应用认出用户 $SMOKE_OWNER（管理员）"
   else
@@ -304,9 +304,11 @@ probes_mcp() { # 工具 Bot 调得到：tools/list 有本插件工具，只读�
     fail 工具Bot调得到 "没写探测：在 scripts/smoke-probes.sh 里写 MCP_TOOL=<只读工具>、MCP_ARGS 和 mcp_assert"
     return 0
   fi
-  gw="wonton-$SMOKE_INSTANCE--com-nousresearch-hermes--gateway"
   hermes_line="$(probes_status_wait com.nousresearch.hermes 40)" ||
     { fail 工具Bot调得到 "Hermes 不是 running healthy：$hermes_line"; return 1; }
+  # gateway 是 Bot 服务：核心把容器命名成 `<插件网络>--gateway--<Bot 名>`，旧核心没有后缀，按前缀找在跑的那个。
+  gw="$(running_container "wonton-$SMOKE_INSTANCE--com-nousresearch-hermes--gateway")" ||
+    { fail 工具Bot调得到 "没有在跑的 Hermes gateway 容器（wonton-$SMOKE_INSTANCE--com-nousresearch-hermes--gateway*）"; return 1; }
   if declare -F before_mcp >/dev/null; then
     before_mcp >>"$PROBES_LOG" 2>&1 ||
       { fail 工具Bot调得到 "工具的准备工作（before_mcp）失败，见 $PROBES_LOG 末尾：$(tail -c 200 "$PROBES_LOG" | tr '\n' ' ')"; return 0; }

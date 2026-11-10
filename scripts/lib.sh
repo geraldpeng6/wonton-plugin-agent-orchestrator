@@ -83,6 +83,15 @@ in_core() {
   docker run --rm --network none -v "$dir:/plugin:ro" "$(core_image)" "$@"
 }
 
+# 在跑的容器里按名字前缀找一个：running_container <前缀>，找不到时返回 1、标准输出为空。核心给 Bot 服务的
+# 容器名带上 `--<Bot 名>`（plugin/names.rs 的 bot_container），调用方只按 `<插件网络>--<服务>` 找，旧核心
+# 没有这个后缀也能命中；同一个服务有多个 Bot 时取第一个。
+running_container() {
+  local names
+  names="$(docker container ls --filter "name=$1" --format '{{.Names}}')" || return 1
+  grep -x -m1 -E "$1(--[a-z0-9-]+)?" <<<"$names"
+}
+
 # `plugin check` 输出的第一行去掉“插件 ”，即“<ID> <版本>”。有不合格的地方时 check 的退出码是 1，第一行照常有；
 # 插件包解析不了时为空。
 manifest_line() {
