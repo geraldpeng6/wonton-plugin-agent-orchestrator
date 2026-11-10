@@ -24,6 +24,34 @@ need() {
   done
 }
 
+# 所有 curl 都带超时，网页或接口不回时冒烟和它占的验证栈名额不跟着挂死。网页 120 秒、接口 600 秒；
+# 下载是几十 KB 的套件文件，公网线路卡住时 3 分钟内必须结束，连接阶段 30 秒不通也不等。
+# 调用方（或探针）用同名变量覆盖，单个请求还可以在自己的 curl 参数里再给更短的时间。
+: "${SMOKE_WEB_MAX_TIME:=120}"
+: "${SMOKE_API_MAX_TIME:=600}"
+: "${SMOKE_DOWNLOAD_MAX_TIME:=180}"
+: "${SMOKE_CONNECT_TIMEOUT:=30}"
+
+# 带超时的 curl：<秒数> <地址> [<curl 参数>…]，地址放在最后交给 curl。超时（curl 退出码 28）时在 stderr
+# 写地址和秒数，curl 自己只会给“curl: (28)”；调用方在自己的参数里给的 --max-time 优先，报的也是那个数。
+curl_t() {
+  local secs="$1" url="$2" rc=0
+  shift 2
+  local -a args=("$@")
+  local i
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    case "${args[$i]}" in
+      --max-time) secs="${args[$((i + 1))]}" ;;
+      --max-time=*) secs="${args[$i]#--max-time=}" ;;
+    esac
+  done
+  curl -sS --fail-with-body --max-time "$secs" "$@" "$url" || rc=$?
+  if ((rc == 28)); then
+    echo "超时退出（上限 ${secs} 秒）：$url" >&2
+  fi
+  return "$rc"
+}
+
 # 开发环境的一项设置（.wonton/.env），没有时为空。
 setting() {
   [[ -f "$env_file" ]] || return 0
