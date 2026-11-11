@@ -14,6 +14,8 @@ case "${1:-}" in
   *) die "用法：scripts/check.sh [--official]" ;;
 esac
 need_core_command check
+# 套件自己的命令（logs、diag）的用例：用假 docker，不碰真的 Docker。
+"$root/scripts/dev_test.sh"
 
 # 核心只在清单 spec 太新时报错，并顺带说出支持到哪一版；插件 spec 旧于核心时静默通过，模板照抄旧 spec 也不吭声。
 # 拿一个必报太新的最小清单去问核心支持到哪版（问不到就不提醒），比清单的 spec 旧就提醒一句。
