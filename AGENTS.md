@@ -2,7 +2,7 @@
 
 本仓库是 Agent Orchestrator 插件：一个编排器 Bot，把活拆给工人。适配器 `images/wonton-plugin-agent-orchestrator/adapter.py` 的映射（谁对谁、什么变成卡片、什么变成话题）写在文件开头的注释里，改之前先读。
 
-本文件对人和 AI 编程代理（Claude Code、Codex 等）同样适用。通用开发流程见[开发指南](https://github.com/geraldpeng6/wonton-docs/blob/main/develop.md)，规则见[插件规范](https://github.com/geraldpeng6/wonton-docs/blob/main/plugin-spec.md)。
+本文件对人和 AI 编程代理（Claude Code、Codex 等）同样适用。通用开发流程见[开发指南](https://github.com/wontonapp/wonton-docs/blob/main/develop.md)，规则见[插件规范](https://github.com/wontonapp/wonton-docs/blob/main/plugin-spec.md)。
 
 ## 插件包
 
@@ -46,7 +46,7 @@
 
 ## 共用一台 Docker
 
-几个人或几个 Agent 可能共用一台 Docker，各自的开发环境靠实例名分开（见[开发指南的“开发环境”](https://github.com/geraldpeng6/wonton-docs/blob/main/develop.md#开发环境)）。
+几个人或几个 Agent 可能共用一台 Docker，各自的开发环境靠实例名分开（见[开发指南的“开发环境”](https://github.com/wontonapp/wonton-docs/blob/main/develop.md#开发环境)）。
 
 - 开发环境的起停、安装和清理只用 `scripts/dev.sh`。
 - 不执行 `docker system prune`、`docker container prune`、`docker volume prune`、`docker network prune`、

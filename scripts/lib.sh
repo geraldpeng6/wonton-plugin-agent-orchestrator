@@ -20,7 +20,7 @@ info() {
 need() {
   local tool
   for tool in "$@"; do
-    command -v "$tool" >/dev/null 2>&1 || die "没有找到 $tool，先装上它（见 https://github.com/geraldpeng6/wonton-docs/blob/main/develop.md#准备）"
+    command -v "$tool" >/dev/null 2>&1 || die "没有找到 $tool，先装上它（见 https://github.com/wontonapp/wonton-docs/blob/main/develop.md#准备）"
   done
 }
 
@@ -73,7 +73,7 @@ need_core_command() {
   usage="$(docker run --rm --network none "$image" plugin 2>&1)" || status=$?
   ((status != 125)) || die "运行不了核心镜像 $image：$usage"
   [[ "$usage" == *"plugin $1"* ]] ||
-    die "核心镜像 $image 太旧，没有 wonton-core plugin $1：换新版本，或用 WONTON_CORE_IMAGE 指定（见 https://github.com/geraldpeng6/wonton-docs/blob/main/develop.md#开发环境）"
+    die "核心镜像 $image 太旧，没有 wonton-core plugin $1：换新版本，或用 WONTON_CORE_IMAGE 指定（见 https://github.com/wontonapp/wonton-docs/blob/main/develop.md#开发环境）"
 }
 
 # 在核心镜像里执行 wonton-core：in_core <插件包目录> <参数…>，目录只读挂在 /plugin。
