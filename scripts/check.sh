@@ -40,7 +40,7 @@ PY
   if ((a1 > b1 || (a1 == b1 && a2 >= b2))); then
     return 0
   fi
-  echo "提醒：清单是 spec $plugin_spec，核心镜像 $(core_image) 支持到 $core_max；新插件建议写现行版本（字段见 https://github.com/geraldpeng6/wonton-docs/blob/main/plugin-spec.md）。" >&2
+  echo "提醒：清单是 spec $plugin_spec，核心镜像 $(core_image) 支持到 $core_max；新插件建议写现行版本（字段见 https://github.com/wontonapp/wonton-docs/blob/main/plugin-spec.md）。" >&2
 }
 
 output="$(mktemp)"

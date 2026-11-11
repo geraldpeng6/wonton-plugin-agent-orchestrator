@@ -1,6 +1,6 @@
 Agent Orchestrator
 
-开发流程见[插件开发指南](https://github.com/geraldpeng6/wonton-docs/blob/main/develop.md)。
+开发流程见[插件开发指南](https://github.com/wontonapp/wonton-docs/blob/main/develop.md)。
 
 [Agent Orchestrator](https://github.com/OrchestratorInc/agent-orchestrator) 是给一群编程 Agent 派活的编排器。
 在云吞里它是聊天中的一个 Bot：你给一个目标，它把活拆给工人，每个工人在自己的 git worktree 里干活；

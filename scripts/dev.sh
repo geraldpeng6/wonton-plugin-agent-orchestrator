@@ -54,7 +54,7 @@ local_docker() {
   local host="${DOCKER_HOST:-}"
   [[ -n "$host" ]] || host="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true)"
   case "$host" in
-    ssh://* | tcp://*) die "Docker 在别的主机上（$host）：把仓库放到那台主机上，在那里执行（见 https://github.com/geraldpeng6/wonton-docs/blob/main/develop.md#在远程主机上开发）" ;;
+    ssh://* | tcp://*) die "Docker 在别的主机上（$host）：把仓库放到那台主机上，在那里执行（见 https://github.com/wontonapp/wonton-docs/blob/main/develop.md#在远程主机上开发）" ;;
   esac
 }
 
