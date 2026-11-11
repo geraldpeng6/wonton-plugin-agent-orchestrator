@@ -45,7 +45,7 @@ kit_update() (
   info "下载开发套件 $sha"
   # 下载走公网、不经 --noproxy：每个文件只有几十 KB，线路卡住时 3 分钟内必须结束、连接 30 秒不通也不再等
   # （SMOKE_DOWNLOAD_MAX_TIME / SMOKE_CONNECT_TIMEOUT，见 lib.sh），卡住时套件不会换到半份文件。
-  curl_t "$SMOKE_DOWNLOAD_MAX_TIME" "$base/scripts/kit.files" -fsSL --connect-timeout "$SMOKE_CONNECT_TIMEOUT" \
+  curl_t "$SMOKE_DOWNLOAD_MAX_TIME" "$base/scripts/kit.files" -sSL --connect-timeout "$SMOKE_CONNECT_TIMEOUT" \
     -o "$stage/scripts/kit.files" || die "取不到开发套件清单（$sha）"
   local -a files=()
   while IFS= read -r path || [[ -n "$path" ]]; do
@@ -55,7 +55,7 @@ kit_update() (
     files+=("$path")
     [[ "$path" != scripts/kit.files ]] || continue
     mkdir -p "$stage/$(dirname "$path")"
-    curl_t "$SMOKE_DOWNLOAD_MAX_TIME" "$base/$path" -fsSL --connect-timeout "$SMOKE_CONNECT_TIMEOUT" \
+    curl_t "$SMOKE_DOWNLOAD_MAX_TIME" "$base/$path" -sSL --connect-timeout "$SMOKE_CONNECT_TIMEOUT" \
       -o "$stage/$path" || die "取不到开发套件文件 $path（$sha），没有替换文件"
     case "$path" in scripts/*.sh) chmod +x "$stage/$path" ;; esac
   done <"$stage/scripts/kit.files"

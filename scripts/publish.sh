@@ -4,10 +4,13 @@
 # 先把清单里的 version 改成新版本、写好 release_notes，提交，再执行它。脚本按顺序：
 #   1. 检查：工作区是干净的，tag v<版本> 还没有，插件包合格。
 #   2. images/<名字>/ 下的每个 Dockerfile：按清单 requirements.arch 构建镜像（没写就是 linux/amd64 和 linux/arm64），
-#      推到 compose 里写的那个镜像仓库，
-#      把 compose 里引用它的地方改成这个版本的摘要，提交。
+#      推到 compose 里写的那个镜像仓库（仓库必须以 /<名字> 结尾），
+#      把 compose 里引用它的地方改成这个版本的摘要，提交（这个提交直接进当前分支）。
 #   3. 再检查一遍（--official 时按官方索引的要求）。
-#   4. 打 tag v<版本>，推送当前分支和 tag（远端 origin）。
+#   4. 在摘要提交上打 tag v<版本>，推送当前分支和 tag（远端 origin）。仅用上游镜像、没有摘要提交时，
+#      tag 打在清单版本的提交上。
+# tag 由此指向已含该版本镜像摘要的提交，且只打一次（已有同名 tag 直接失败）；发布不从推 tag 触发
+# （publish.yml 是手动触发），发布过的 tag 不移动。
 #
 # 仓库公开时在 GitHub Actions 里执行（.github/workflows/publish.yml），不用本机登录镜像仓库；私有仓库的免费额度很少，
 # 几个插件一起开发时很快用完，在本机执行。
@@ -79,7 +82,7 @@ path, name = sys.argv[1:]
 repos = {m.group(1) for m in re.finditer(r"^\s*image:\s*(?:&\S+\s+)?(\S+/" + re.escape(name) + r")(?=[:@\s]|$)",
                                           open(path, encoding="utf-8").read(), re.M)}
 if len(repos) != 1:
-    sys.exit(f"compose 里引用 …/{name} 的镜像有 {len(repos)} 种写法：{sorted(repos)}")
+    sys.exit(f"compose 里引用 images/{name} 的镜像应有且只有一种写法：image 仓库以 /{name} 结尾（如 ghcr.io/<你>/{name}），现在是 {len(repos)} 种：{sorted(repos)}")
 print(repos.pop())
 PY
 }

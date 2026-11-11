@@ -8,7 +8,8 @@
 #   scripts/dev.sh rebuild                    强制重建核心栈，再保数据重装工作区插件；其他插件容器不重建
 #   scripts/dev.sh uninstall [--purge]        卸载；--purge 连插件的数据一起删
 #   scripts/dev.sh status                     开发环境的服务和装着的插件
-#   scripts/dev.sh logs [<服务>]              跟着看核心的日志；给了插件的服务名就看那个服务的
+#   scripts/dev.sh logs [<服务>]              跟着看日志：核心栈的服务（core、hydra 等）或插件的服务名
+#   scripts/dev.sh diag                       只读诊断：插件登录用的主机名解析、出口代理设置和可达性、注入的代理变量
 #   scripts/dev.sh token                      用户令牌：浏览器登录和调接口都用它
 #   scripts/dev.sh session [--new]            建立用户会话（--new 重建），cookie 存在 .wonton/session.cookies
 #   scripts/dev.sh web [--jar <文件>] [--fresh] [--sso] [<路径> [<curl 参数>…]]
@@ -27,7 +28,7 @@
 #   scripts/dev.sh purge [--yes]              删掉整个开发环境；非交互执行必须带 --yes
 #   scripts/dev.sh kit-update [<ref>]          更新开发套件（默认 main），不需要 Docker
 #
-# 第一次 up 时可以用环境变量定下：WONTON_CORE_IMAGE（核心镜像，默认 ghcr.io/geraldpeng6/wonton-core:main）、
+# 第一次 up 时可以用环境变量定下：WONTON_CORE_IMAGE（核心镜像，默认 ghcr.io/wontonapp/wonton-core:main）、
 # WONTON_INSTANCE（实例名）、WONTON_PORT（网页端口，隧道用下一个端口）、WONTON_DEV_DOMAIN（基础域名，默认
 # <实例名>.wonton.localhost）、WONTON_PULL=never（用本机构建的核心镜像，不拉取）。之后改 .wonton/.env 再 up。
 # 对着别的栈跑 probes、api、session 时，在 .wonton/.env 写那套栈的 WONTON_BASE_DOMAIN：实例名只是资源名前缀，
@@ -42,6 +43,8 @@ core_subnet="${WONTON_DEV_CORE_SUBNET:-}"
 if [[ "${1:-}" != kit-update ]]; then
   # shellcheck source=scripts/dev-resources.sh
   . "$root/scripts/dev-resources.sh"
+  # shellcheck source=scripts/dev-diag.sh
+  . "$root/scripts/dev-diag.sh"
 fi
 
 usage() {
@@ -184,7 +187,10 @@ up() {
   check_core_image "$image"
   write_settings
   info "生成密钥和配置（已有的沿用）"
-  docker run --rm --user "$(id -u):$(id -g)" -v "$state:$state" "$image" init "$state" "$domain" >/dev/null
+  # 核心 4cdfe16 起 init 要求身份三选一：WONTON_MATRIX_SERVER_NAME、家名服务（WONTON_CLIENT_SERVICE+邀请码）
+  # 或 WONTON_MATRIX_NAME_MODE=none。开发栈不注册公共名字：none 生成随机的 <随机>.wonton.internal，只与同类
+  # 已配对云吞互通，开发冒烟够用；老核心没有这个开关，多传的变量被忽略。要公共名字走正式安装（install.sh）。
+  docker run --rm --user "$(id -u):$(id -g)" -e WONTON_MATRIX_NAME_MODE=none -v "$state:$state" "$image" init "$state" "$domain" >/dev/null
   info "启动核心、身份提供方和 Matrix 服务器（第一次要拉镜像，几分钟）"
   compose up -d --wait --wait-timeout 600 || die "没有在 10 分钟内就绪，看看日志：scripts/dev.sh logs"
   need_env
@@ -394,15 +400,47 @@ if not plugins:
 PY
 }
 
+# 容器名 wonton-<实例>--<插件>--<服务>[--<Bot>] 里的服务名：插件和服务名都不含 `--`，核心容器只有两段。
+service_of() {
+  local rest="${1#wonton-"$instance"--}"
+  rest="${rest#*--}"
+  printf '%s\n' "${rest%%--*}"
+}
+
+# 跟着看日志：先认核心栈的 compose 服务（core、hydra 等），再认本实例的插件容器；都没有时列出可选的。
 logs() {
   need_env
-  if [[ -z "${1:-}" ]]; then
-    compose logs -f --tail 200 core
+  local service="${1:-core}" name candidates services
+  local -a names=()
+  services="$(compose config --services 2>/dev/null)" || true
+  if [[ -z "${1:-}" ]] || grep -qxF -- "$service" <<<"$services"; then
+    compose logs -f --tail 200 "$service"
     return
   fi
-  local id
-  id="$(plugin_id)"
-  docker logs -f --tail 200 "wonton-$instance--${id//./-}--$1"
+  while read -r name; do
+    [[ "$(service_of "$name")" == "$service" ]] && names+=("$name")
+  done < <(docker ps -a --filter "name=^wonton-$instance--" --format '{{.Names}}') || true
+  if [[ ${#names[@]} -eq 1 ]]; then
+    docker logs -f --tail 200 "${names[@]}"
+    return
+  fi
+  if [[ ${#names[@]} -gt 1 ]]; then
+    # docker logs 一次只能跟一个容器：各起一个后台跟着，Ctrl-C 一起收到，等它们都结束。
+    local -a pids=()
+    for name in "${names[@]}"; do
+      docker logs -f --tail 200 "$name" &
+      pids+=("$!")
+    done
+    wait "${pids[@]}" || true
+    return
+  fi
+  candidates="$( {
+    printf '%s\n' "$services"
+    docker ps -a --filter "name=^wonton-$instance--" --format '{{.Names}}' |
+      while read -r name; do service_of "$name"; done
+  } | sed '/^$/d' | sort -u | paste -sd ' ' -)"
+  candidates="${candidates:-没有取到}"
+  die "没有叫 $service 的服务。可选：$candidates"
 }
 
 # 插件网页入口：核心把清单的 webui.path（没写就是 /）拼在域名后面，从这里开始走应用的登录链。
@@ -708,6 +746,7 @@ case "${1:-}" in
   uninstall) uninstall_plugin "${@:2}" ;;
   status) status ;;
   logs) logs "${@:2}" ;;
+  diag) diag ;;
   token)
     need_env
     token

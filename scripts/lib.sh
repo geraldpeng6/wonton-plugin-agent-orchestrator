@@ -6,7 +6,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 state="${WONTON_DEV_STATE:-$root/.wonton}"
 env_file="$state/.env"
 # 没有开发环境时，检查和打包用这个核心镜像：main 每次合并都会更新，插件跟着主干的规范走，不等发版。
-default_image="ghcr.io/geraldpeng6/wonton-core:main"
+default_image="ghcr.io/wontonapp/wonton-core:main"
 
 die() {
   echo "$*" >&2
@@ -92,10 +92,10 @@ running_container() {
   grep -x -m1 -E "$1(--[a-z0-9-]+)?" <<<"$names"
 }
 
-# `plugin check` 输出的第一行去掉“插件 ”，即“<ID> <版本>”。有不合格的地方时 check 的退出码是 1，第一行照常有；
-# 插件包解析不了时为空。
+# `plugin check` 输出里的「插件 <ID> <版本>」行去掉前缀。核心 4cdfe16 前后会先打一行 tracing
+# （图片助手启动），清单行不再固定是第一行：在全部输出里找。
 manifest_line() {
-  { in_core "$root" plugin check /plugin 2>/dev/null || true; } | sed -n '1s/^插件 //p'
+  { in_core "$root" plugin check /plugin 2>/dev/null || true; } | sed -n 's/^插件 //p' | head -1
 }
 
 plugin_id() {

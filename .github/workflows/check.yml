@@ -23,7 +23,7 @@ permissions:
 
 jobs:
   check:
-    uses: geraldpeng6/wonton-plugin-template/.github/workflows/plugin-check.yml@94970a8ce77646f67aeb91de8419a7aa8d95fda7
+    uses: geraldpeng6/wonton-plugin-template/.github/workflows/plugin-check.yml@4b37101b12911fc1abe79c6583329825c9e3b045
     with:
       # pull_request 和 push 触发时没有这个输入，为空，走套件默认。
       core-image: ${{ inputs.core-image }}
