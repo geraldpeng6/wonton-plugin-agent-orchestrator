@@ -52,6 +52,9 @@ services:
       WONTON_MCP_URL: ${WONTON_MCP_URL:?需要 MCP 总线地址}
       # 新会话切到这个模式：改文件、跑命令经确认卡片问主人。
       WONTON_ACP_MODE: guarded
+      # 编排器一轮要读完技能、建仓库、问问题、等回答再派工，模型慢时整条链超过 15 分钟，适配器自己也按
+      # 1800 秒等；桥默认 600 秒就取消，取消会打断编排器手上的任务，话题、卡片、交付全没有。
+      WONTON_ACP_TURN_SECONDS: "1800"
     volumes:
       - ${WONTON_BOT_DATA}/bridge:/data/bridge
       - ${WONTON_BOT_DATA}/run:/data/run
