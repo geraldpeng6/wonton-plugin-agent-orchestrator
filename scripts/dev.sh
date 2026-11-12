@@ -3,9 +3,13 @@
 # 把这个仓库的插件装进去。设置、密钥和数据都在 .wonton/ 里，不装进系统，不要 root。
 #
 #   scripts/dev.sh up                         起开发环境，等到都健康；再执行一次就是拉最新的核心镜像重启
-#   scripts/dev.sh install [--yes] [<引用>]   预览后安装插件：默认装工作区里的，给了 git 引用（tag、分支、提交）就装那个版本
-#   scripts/dev.sh reinstall [--yes]          卸载（保留数据）再装上工作区里的：改了插件包以后用
-#   scripts/dev.sh upgrade [--yes] [<引用>]   升级已装的插件：换容器不吊销 Bot 的设备，数据和密钥都留着
+#   scripts/dev.sh install [--yes] [--setting <名字>=<值>]… [<引用>]
+#                                             预览后安装插件：默认装工作区里的，给了 git 引用（tag、分支、提交）就装那个版本；
+#                                             --setting 填插件设置（清单 x-wonton.settings 的 Schema），可以给多次
+#   scripts/dev.sh reinstall [--yes] [--setting <名字>=<值>]…
+#                                             卸载（保留数据）再装上工作区里的：改了插件包以后用；装着时的设置值带过去
+#   scripts/dev.sh upgrade [--yes] [--setting <名字>=<值>]… [<引用>]
+#                                             升级已装的插件：换容器不吊销 Bot 的设备，数据、密钥和设置都留着
 #   scripts/dev.sh rebuild                    强制重建核心栈，再保数据重装工作区插件；其他插件容器不重建
 #   scripts/dev.sh uninstall [--purge]        卸载；--purge 连插件的数据一起删
 #   scripts/dev.sh status                     开发环境的服务和装着的插件
@@ -17,12 +21,13 @@
 #                                             以用户的身份请求插件网页；--sso 会从清单 webui.path 的入口提交 JS 自动表单并跟完重定向
 #   scripts/dev.sh api <方法> <路径> [<curl 参数>…] 带用户令牌调用核心管理接口
 #   scripts/dev.sh egress <地址>                读取设置后用同样的 restarts 和直连网段设置出口代理
+#   scripts/dev.sh model <上游地址> <模型> <key 文件>  把 OpenAI 兼容的服务商接成模型网关的上游（key 只从文件读）
 #   scripts/dev.sh mcp list                   Bot 经 MCP 总线能调到的工具（JSON）
 #   scripts/dev.sh mcp call <工具> [<JSON>]   经 MCP 总线调用工具，参数是 JSON 对象，默认 {}
 #   scripts/dev.sh mcp --direct list|call …   直连工作区清单的 MCP 服务，只调试插件本身，不走总线权限和确认
 #   scripts/dev.sh approve [--watch]          用主人令牌批准确认卡片；--watch 持续批准，Ctrl-C 停止
-#   scripts/dev.sh smoke                      对工作区的插件跑合并前的端到端冒烟：起一套一次性实例，跑完清理
-#   scripts/dev.sh probes [<探针名>…]          对装着的工作区插件跑冒烟探针（web_assert、identity_check、mcp、data_write、data_check），不起新实例；给了名字就只跑那几项
+#   scripts/dev.sh smoke                      对工作区的插件跑合并前的端到端冒烟：起一套一次性实例，跑完清理（参数见 smoke.sh 开头）
+#   scripts/dev.sh probes [<探针名>…]          对装着的工作区插件跑冒烟探针（web_assert、identity_check、mcp、extra_check、data_write、data_check），不起新实例；给了名字就只跑那几项
 #   scripts/dev.sh pair                       在终端里出配对二维码，给 App 用
 #   scripts/dev.sh down                       停下核心，数据都留着；插件的容器由核心管，照常运行
 #   scripts/dev.sh reset                      删掉当前实例的插件容器和网络，保留核心和 .wonton 数据
@@ -37,6 +42,7 @@
 # 默认地址池（只有约 30 个网络，几套栈共用一台 Docker 时会用光）；写进 .wonton/compose.subnet.yaml，栈拆掉之前一直沿用。
 # WONTON_DEV_STATE（如 ~/.w/<插件名>）把 .wonton 整个换到别处，每次执行都要带上：宿主网络插件的中继套接字在
 # <它>/data/apps/<插件 id>/relay/webui.sock，unix 套接字路径最多 107 字节，仓库放得深时核心会拒装。
+# 一个仓库放多家插件：WONTON_PLUGIN 指到插件目录（如 WONTON_PLUGIN=agents/<名>），状态放在 .wonton/<目录名>。
 set -euo pipefail
 # forget_environment 会清掉所有 WONTON_*，先留一份。
 core_subnet="${WONTON_DEV_CORE_SUBNET:-}"
@@ -85,7 +91,7 @@ first_settings() {
   instance="${WONTON_INSTANCE:-}"
   if [[ -z "$instance" ]]; then
     local base
-    base="$(basename "$root")"
+    base="$(basename "$plugin")"
     base="${base#wonton-plugin-}"
     base="$(printf '%s' "${base#wonton-}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9' | cut -c1-10)"
     instance="${base:-dev}$(random_hex 2)"
@@ -102,7 +108,7 @@ first_settings() {
   source="${WONTON_CORE_IMAGE:-$default_image}"
   pull="${WONTON_PULL:-}"
   domain="${WONTON_DEV_DOMAIN:-$instance.wonton.localhost}"
-  owner_email="${WONTON_OWNER_EMAIL:-owner@$domain}"
+  owner_email="${WONTON_OWNER_EMAIL:-$default_owner_email}"
 }
 
 # 核心的基础域名，不是实例名：实例名只是资源名前缀。别的栈写 .wonton/.env 的 WONTON_BASE_DOMAIN；从主仓库抄成
@@ -117,7 +123,7 @@ load_settings() {
   source="$(setting WONTON_CORE_SOURCE)"
   pull="${WONTON_PULL:-$(setting WONTON_PULL)}"
   owner_email="$(setting WONTON_OWNER_EMAIL)"
-  [[ -n "$owner_email" ]] || owner_email="owner@$domain"
+  [[ -n "$owner_email" ]] || owner_email="$default_owner_email"
 }
 
 write_settings() {
@@ -283,7 +289,8 @@ import json, sys
 text = sys.argv[1]
 try:
     error = json.loads(text)["error"]
-    print(f"{error['message']}（{error['kind']}）")
+    fields = "".join(f"；{f['name']}：{f['message']}" for f in error.get("fields") or [])
+    print(f"{error['message']}（{error['kind']}）{fields}")
 except Exception:
     print(text.strip() or "没有回应")
 PY
@@ -310,34 +317,73 @@ print(",".join(line["permission"] for line in p["permissions"]))
 PY
 }
 
-install_plugin() {
-  local yes="" ref="" dir="$root" arg preview grants result answer
-  for arg in "$@"; do
-    case "$arg" in
-      --yes) yes=1 ;;
+# 插件设置值的上传请求头（plugin_settings.py 按预览里的表单定类型），追加到数组 setting_header；没有值时不加。
+# 用法：settings_for <预览 JSON> [--base <文件>] [--old <说明>] [名字=值…]
+settings_for() {
+  local preview="$1" value
+  shift
+  printf '%s' "$preview" >"$tmp/preview.json"
+  value="$(python3 "$root/scripts/plugin_settings.py" header "$tmp/preview.json" "$@")" || exit 1
+  setting_header=()
+  [[ -z "$value" ]] || setting_header=(-H "Wonton-Plugin-Settings: $value")
+}
+
+# 装完、升级完核对设置值都存下了：核心不认识这个请求头时会照装、不带值，不能当成功。
+settings_check() { # <插件 id>
+  local id="$1" view
+  ((${#setting_header[@]})) || return 0
+  view="$(api GET "/_wonton/api/plugins/$id/settings")" || die "读不到设置，核不了值：$(error_text "$view")"
+  printf '%s' "$view" >"$tmp/settings.json"
+  python3 "$root/scripts/plugin_settings.py" verify "$tmp/settings.json" "${setting_header[1]#*: }" ||
+    die "核心没存下给的设置值：核心镜像可能太旧，不认识 Wonton-Plugin-Settings 请求头（scripts/dev.sh up 换最新的）"
+}
+
+# 解析 install、upgrade 共用的参数：--yes、--setting（进数组 setting_pairs）和一个可选的 git 引用。
+install_args() {
+  yes="" ref=""
+  setting_pairs=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --yes) yes=1; shift ;;
+      --setting) [[ $# -ge 2 && "$2" == ?*=* ]] || usage; setting_pairs+=("$2"); shift 2 ;;
       -*) usage ;;
-      *) [[ -z "$ref" ]] || usage; ref="$arg" ;;
+      *) [[ -z "$ref" ]] || usage; ref="$1"; shift ;;
     esac
   done
+}
+
+install_plugin() {
+  local yes ref dir="$plugin" preview grants result answer
+  local -a setting_pairs setting_header old=() base=()
+  install_args "$@"
   need_env
+  need_plugin
   # 放在 .wonton/ 里：Docker Desktop 一定能挂载仓库下面的目录。退出时才删，所以 tmp 不是局部变量。
   tmp="$(mktemp -d "$state/tmp.XXXXXX")"
   trap 'rm -rf "$tmp"' EXIT
   if [[ -n "$ref" ]]; then
     mkdir "$tmp/src"
-    git -C "$root" archive "$ref" | tar -x -C "$tmp/src" || die "导不出 $ref（git archive 失败）"
+    git -C "$root" archive "$(plugin_tree "$ref")" | tar -x -C "$tmp/src" || die "导不出 $(plugin_tree "$ref")（git archive 失败）"
     dir="$tmp/src"
   fi
   in_core "$dir" plugin pack /plugin >"$tmp/package.tar" || die "打包失败，原因见上面"
   preview="$(api POST /_wonton/api/plugins/preview -H 'Content-Type: application/x-tar' --data-binary @"$tmp/package.tar")" ||
     die "预览失败：$(error_text "$preview")"
   grants="$(show_preview "$preview")" || exit 1
+  # 冒烟装升级起点的旧 tag 时，旧版本没有的设置不带；工作区和指定的新版本少了设置就报错。
+  [[ -z "$ref" ]] || old=(--old "版本 $ref ")
+  if [[ -n "${carry_settings:-}" ]]; then
+    printf '%s' "$carry_settings" >"$tmp/base.json"
+    base=(--base "$tmp/base.json")
+  fi
+  settings_for "$preview" "${base[@]}" "${old[@]}" "${setting_pairs[@]}"
   if [[ -z "$yes" ]]; then
     read -r -p "确认安装？[y/N] " answer
     [[ "$answer" == [yY] ]] || die "没装"
   fi
-  result="$(api POST "/_wonton/api/plugins?grant=$grants" -H 'Content-Type: application/x-tar' --data-binary @"$tmp/package.tar")" ||
-    die "安装失败：$(error_text "$result")"
+  result="$(api POST "/_wonton/api/plugins?grant=$grants" -H 'Content-Type: application/x-tar' "${setting_header[@]}" \
+    --data-binary @"$tmp/package.tar")" || die "安装失败：$(error_text "$result")"
+  settings_check "$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$result")"
   python3 - "$result" <<'PY'
 import json, sys
 p = json.loads(sys.argv[1])
@@ -358,56 +404,62 @@ uninstall_plugin() {
   if [[ -n "$purge" ]]; then echo "卸载了 $id，数据也删了"; else echo "卸载了 $id，数据留着，再装时接着用"; fi
 }
 
-# 装着就先卸载（保留数据），没装就直接装。
+# 装着就先卸载（保留数据），没装就直接装。卸载会丢掉设置值，所以先读出来，装的时候带上，--setting 再盖过它。
 reinstall() {
-  local yes="" arg id result
-  for arg in "$@"; do
-    case "$arg" in
-      --yes) yes=--yes ;;
+  local id result view carry_settings=""
+  local -a passed=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --yes) passed+=(--yes); shift ;;
+      --setting) [[ $# -ge 2 && "$2" == ?*=* ]] || usage; passed+=(--setting "$2"); shift 2 ;;
       *) usage ;;
     esac
   done
   need_env
   id="$(plugin_id)"
   if result="$(api GET "/_wonton/api/plugins/$id" 2>/dev/null)"; then
+    if view="$(api GET "/_wonton/api/plugins/$id/settings" 2>/dev/null)"; then
+      carry_settings="$(python3 "$root/scripts/plugin_settings.py" current /dev/stdin <<<"$view")" || exit 1
+    elif [[ "$view" != *'"unsupported"'* ]]; then
+      die "读不到 $id 的设置，没卸载：$(error_text "$view")"
+    fi
     uninstall_plugin
   elif [[ "$result" != *'"not_installed"'* ]]; then
     die "查不到 $id 装没装：$(error_text "$result")"
   fi
-  install_plugin $yes
+  install_plugin "${passed[@]}"
 }
 
 # 升级已装的插件：走核心的升级接口，数据和 Bot 的 Matrix 设备都保留（reinstall 是卸载再装，会吊销 Bot 设备，
 # Bot 就读不到旧房间的加密历史了）。
 upgrade() {
-  local yes="" ref="" dir="$root" arg id preview grants result answer
-  for arg in "$@"; do
-    case "$arg" in
-      --yes) yes=1 ;;
-      -*) usage ;;
-      *) [[ -z "$ref" ]] || usage; ref="$arg" ;;
-    esac
-  done
+  local yes ref dir="$plugin" id preview grants result answer
+  local -a setting_pairs setting_header
+  install_args "$@"
   need_env
+  need_plugin
   id="$(plugin_id)"
   # 放在 .wonton/ 里：Docker Desktop 一定能挂载仓库下面的目录。退出时才删，所以 tmp 不是局部变量。
   tmp="$(mktemp -d "$state/tmp.XXXXXX")"
   trap 'rm -rf "$tmp"' EXIT
   if [[ -n "$ref" ]]; then
     mkdir "$tmp/src"
-    git -C "$root" archive "$ref" | tar -x -C "$tmp/src" || die "导不出 $ref（git archive 失败）"
+    git -C "$root" archive "$(plugin_tree "$ref")" | tar -x -C "$tmp/src" || die "导不出 $(plugin_tree "$ref")（git archive 失败）"
     dir="$tmp/src"
   fi
   in_core "$dir" plugin pack /plugin >"$tmp/package.tar" || die "打包失败，原因见上面"
   preview="$(api POST "/_wonton/api/plugins/$id/upgrade/preview" -H 'Content-Type: application/x-tar' --data-binary @"$tmp/package.tar")" ||
     die "预览失败：$(error_text "$preview")"
   grants="$(show_preview "$preview")" || exit 1
+  # 升级只带改动的项：没给的设置核心沿用装着的值。
+  settings_for "$preview" "${setting_pairs[@]}"
   if [[ -z "$yes" ]]; then
     read -r -p "确认升级？[y/N] " answer
     [[ "$answer" == [yY] ]] || die "没升"
   fi
-  result="$(api POST "/_wonton/api/plugins/$id/upgrade?grant=$grants" -H 'Content-Type: application/x-tar' --data-binary @"$tmp/package.tar")" ||
-    die "升级失败：$(error_text "$result")"
+  result="$(api POST "/_wonton/api/plugins/$id/upgrade?grant=$grants" -H 'Content-Type: application/x-tar' "${setting_header[@]}" \
+    --data-binary @"$tmp/package.tar")" || die "升级失败：$(error_text "$result")"
+  settings_check "$id"
   python3 - "$result" <<'PY'
 import json, sys
 p = json.loads(sys.argv[1])["plugin"]
@@ -517,13 +569,13 @@ sso_form_login() {
     page_file="$(mktemp)"
     if [[ "$method" == GET ]]; then
       effective="$(curl_t "$SMOKE_WEB_MAX_TIME" "$request_url" --noproxy '*' -L -b "$jar" -c "$jar" \
-        -H 'Accept: text/html' -o "$page_file" -w '%{url_effective}')" || {
+        -H "Accept: $browser_accept" -o "$page_file" -w '%{url_effective}')" || {
         rm -f "$page_file"
         die "读取 SSO 页面失败（$request_url）"
       }
     else
       effective="$(curl_t "$SMOKE_WEB_MAX_TIME" "$request_url" --noproxy '*' -L -b "$jar" -c "$jar" \
-        -H 'Accept: text/html' -o "$page_file" -w '%{url_effective}' \
+        -H "Accept: $browser_accept" -o "$page_file" -w '%{url_effective}' \
         --data "$data")" || {
         rm -f "$page_file"
         die "提交 SSO 表单失败（$request_url）"
@@ -597,7 +649,7 @@ session_into() {
   if [[ -n "$sso" ]]; then
     sso_form_login "$jar" "$entry"
   else
-    curl_t "$SMOKE_WEB_MAX_TIME" "$entry" --noproxy '*' -o /dev/null -L -b "$jar" -c "$jar" -H 'Accept: text/html' ||
+    curl_t "$SMOKE_WEB_MAX_TIME" "$entry" --noproxy '*' -o /dev/null -L -b "$jar" -c "$jar" -H "Accept: $browser_accept" ||
       die "走不通插件网页的登录跳转（GET $entry）"
   fi
 }
@@ -637,6 +689,8 @@ web() {
 if [[ "${1:-}" != kit-update ]]; then
   # shellcheck source=scripts/dev-mcp.sh
   . "$root/scripts/dev-mcp.sh"
+  # shellcheck source=scripts/dev-model.sh
+  . "$root/scripts/dev-model.sh"
 fi
 
 mcp() {
@@ -822,10 +876,11 @@ case "${1:-}" in
   web) web "${@:2}" ;;
   api) api_command "${@:2}" ;;
   egress) egress_proxy "${@:2}" ;;
+  model) model_upstream "${@:2}" ;;
   session) session "${@:2}" ;;
   mcp) mcp "${@:2}" ;;
   approve) approve "${@:2}" ;;
-  smoke) "$root/scripts/smoke.sh" "${@:2}" ;;
+  smoke) WONTON_PLUGIN="$plugin_rel" "$root/scripts/smoke.sh" "${@:2}" ;;
   probes)
     # 探针套件在这里才 source：里面有的名字（如 mcp）会盖过本文件的函数，probes 自己的路不受影响。
     # shellcheck source=scripts/probes.sh
