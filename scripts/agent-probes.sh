@@ -110,6 +110,52 @@ agent_need() {
 
 agent_tmp() { mktemp "${SMOKE_STATE%/*}/agent.XXXXXX"; }
 
+# 诊断辅助：名单外窗口出现 Bot 消息时把现场抓全，误报时不用重跑——原始房间事件（加密事件没有正文，
+# 但 sender/ts/type/relations 齐）、桥和 agent 容器日志、AO 会话列表、核心注入给桥的名单。
+agent_outsider_hit_dump() { # <owner_token> <room_url> <since 毫秒> <outsider 用户 ID>
+  local ot="$1" room_url="$2" since="$3" outsider="$4" outdir ts c
+  ts="$(date +%H%M%S)"
+  outdir="${AO_DBG_DIR:-${SMOKE_STATE%/*}}/outsider-hit-$ts"
+  mkdir -p "$outdir"
+  echo "== 诊断：名单外窗口出现 Bot 消息（since=$since outsider=$outsider），现场在 $outdir"
+  agent_matrix "$ot" GET "/_matrix/client/v3/rooms/$room_url/messages?dir=b&limit=100" \
+    >"$outdir/room-events.json" 2>&1 || true
+  jq -c '.chunk[]? | {ts: .origin_server_ts, sender, type, event_id, content, relates: (.content["m.relates_to"] // empty)}' \
+    "$outdir/room-events.json" 2>/dev/null | head -40 | sed 's/^/事件 /' || true
+  c="$(running_container "wonton-$SMOKE_INSTANCE--$SMOKE_SLUG--bridge")"
+  if [[ -n "$c" ]]; then
+    docker inspect "$c" --format '{{range .Config.Env}}{{println .}}{{end}}' |
+      grep -E "WONTON_MATRIX_(ALLOWED_USERS|HOME_ROOM|USER_ID|HOMESERVER)" | sed 's/^/桥env /'
+    docker logs --tail 500 --timestamps "$c" >"$outdir/bridge.log" 2>&1 || true
+    echo "== 桥日志尾部 50 行 =="; tail -50 "$outdir/bridge.log"
+  fi
+  c="$(running_container "wonton-$SMOKE_INSTANCE--$SMOKE_SLUG--agent")"
+  if [[ -n "$c" ]]; then
+    docker logs --tail 500 --timestamps "$c" >"$outdir/agent.log" 2>&1 || true
+    echo "== agent 日志尾部 50 行 =="; tail -50 "$outdir/agent.log"
+    docker exec "$c" curl -sS --noproxy '*' --max-time 10 http://127.0.0.1:3001/api/v1/orchestrators \
+      >"$outdir/ao-sessions.json" 2>&1 || true
+    echo "== AO 会话列表 =="; head -c 4000 "$outdir/ao-sessions.json"; echo
+    # 每个会话的最近对话：outsider 文本到没到 Agent，看转录里有没有它。
+    jq -r '.sessions[]?.id // empty' "$outdir/ao-sessions.json" 2>/dev/null | sort -u | head -8 |
+      while IFS= read -r sid; do
+        [[ -n "$sid" ]] || continue
+        docker exec "$c" curl -sS --noproxy '*' --max-time 15 \
+          "http://127.0.0.1:3001/api/v1/sessions/$sid/conversation?limit=50" \
+          >"$outdir/ao-conv-$sid.json" 2>&1 || true
+      done
+    echo "== AO 转录关键词扫描（outsider/请用一句话/同一个房间/诊断） =="
+    grep -l . "$outdir"/ao-conv-*.json 2>/dev/null | while IFS= read -r f; do
+      grep -o -E "outsider smoke[^\"]{0,80}|请用一句话[^\"]{0,60}|同一个房间[^\"]{0,60}|诊断：[^\"]{0,60}" "$f" |
+        sed "s|^|$(basename "$f") |" | head -6
+    done
+  fi
+  if [[ -n "${WONTON_DEV_MODEL_BASE_URL:-}" ]]; then
+    echo "== 诊断：让 Agent 复述最近收到的用户消息 =="
+    agent_say --reply any --settle 8 --wait 150 --text '诊断：请逐字复述你最近一次收到的用户消息的原文，只输出原文，不要解释。' 2>&1 | tail -15
+  fi
+}
+
 # 一行摘要：日志里留全文，结果行里只放末尾一段。
 agent_tail() { tail -c "${2:-200}" <<<"$1" | tr '\n' ' '; }
 
@@ -421,6 +467,8 @@ agent_matrix() {
 # 名单外不应答：Bot 只听名单里的人。名单外的临时用户在主房间里发一条，<等待秒>（默认 30）内 Bot 不许回；模型慢、
 # 上一轮还没说完的 Agent 给长一点；踢掉他以后用户在
 # 同一个房间发一条，Bot 必须回：说明 Bot 在收这个房间的消息，前一条是看到了不答，不是没在跑。
+# 开窗前先用主人的一台新设备打一个往返（ping），确认没有轮次还在跑：桥对被打断的轮次会发超时通知，
+# 那是不针对谁的插话，上一轮还在跑时会被算到外人头上。往返没回答时预检不过，这一项记 N/A。
 # [silent]：只断言名单外的人得不到回答，不做踢人后的对照（有的桥在有人进出房间后换 Megolm 会话，之后新登录的
 # 探针设备解不开回话；“Bot 在听且会回用户”由别的子项承担）。
 # 临时用户用 Matrix 服务器的注册共享密钥建；邀请、踢人、读消息用用户本人的身份（管理接口代登录，用完退出），
@@ -429,6 +477,15 @@ agent_check_outsider() { # [silent] [等多少秒，默认 30]
   local admin owner owner_token secret nonce pass name mac reg outsider outsider_token room_url since seen out rc=0 expect
   local wait="${2:-30}"
   agent_need 名单外不应答 || return 0
+  # 桥的轮次超时通知（单轮 10 分钟）不针对谁：上一轮还在跑时，它的超时通知会落进下面的无声窗口，被算成
+  # “Bot 回了外人”。先打一个往返：Bot 回了话就说明在跑的轮次已经结束（桥按轮次排队，回话前不会再开新的
+  # 未完成轮次），再开窗。往返没回答说明可能有轮次还在跑，窗口判定不可信，这一项记 N/A。
+  if out="$(agent_say --reply any --settle 5 --wait "${AGENT_WAIT:-120}" --text '冒烟：请只回答 ping，不要调用工具。' 2>&1)"; then
+    sleep 10
+  else
+    extra_item N/A 名单外不应答 "预检往返没回答，可能有轮次还在跑，窗口判定不可信：$(agent_tail "$out")"
+    return 0
+  fi
   admin="$(docker exec "$SMOKE_CORE" cat "$SMOKE_DATA_DIR/core/matrix-admin-token")" ||
     { extra_item FAIL 名单外不应答 "读不到核心的 Matrix 管理令牌"; return 0; }
   owner="@$SMOKE_OWNER:${AGENT_BOT#*:}"
@@ -464,6 +521,9 @@ agent_check_outsider() { # [silent] [等多少秒，默认 30]
   seen="$(agent_matrix "$owner_token" GET "/_matrix/client/v3/rooms/$room_url/messages?dir=b&limit=100" |
     jq --arg b "$AGENT_BOT" --argjson t "$since" '[.chunk[]? | select(.sender == $b and (.origin_server_ts // 0) >= $t
       and (.type == "m.room.message" or .type == "m.room.encrypted"))] | length')"
+  if [[ "$seen" != 0 ]]; then
+    agent_outsider_hit_dump "$owner_token" "$room_url" "$since" "$outsider"
+  fi
   # 踢掉以后房间回到两个人，Bot 按私聊处理（有的 Agent 在三人房间里整个不回）。
   agent_matrix "$owner_token" POST "/_matrix/client/v3/rooms/$room_url/kick" \
     "$(jq -cn --arg u "$outsider" '{user_id: $u}')" >/dev/null
