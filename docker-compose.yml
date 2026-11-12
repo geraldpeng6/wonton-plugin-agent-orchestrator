@@ -65,7 +65,7 @@ services:
 x-wonton:
   spec: "0.9"
   id: ai.agent-orchestrator
-  version: 0.1.0
+  version: 0.1.1
   kind: agent
   title: { zh: AI 编程队长（Agent Orchestrator）, en: Coding Team Lead (Agent Orchestrator) }
   description:
@@ -99,8 +99,8 @@ x-wonton:
       It lives in its own container: the AO daemon listens on container loopback only, gets no Docker
       socket and cannot reach the host.
   release_notes:
-    zh: 首个版本。编排器和工人都是 Qwen Code，模型网关必填。
-    en: First release. Orchestrator and workers are Qwen Code; the model gateway is required.
+    zh: 名单外检查更稳：先确认 Bot 空闲再发外人消息，连跑 5 轮，命中时自动抓现场。插件行为不变。
+    en: "The outsider check first confirms the bot is idle, runs five rounds, and captures evidence on a hit. Plugin behavior unchanged."
   agent:
     protocol: acp
   bot:
