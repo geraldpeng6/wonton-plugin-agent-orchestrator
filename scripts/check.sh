@@ -4,6 +4,7 @@
 #
 #   scripts/check.sh              不合格时退出码 1；只有提醒时照常通过
 #   scripts/check.sh --official   按官方索引的要求：镜像按摘要固定、长期运行的服务有健康检查、写了标签、许可证、作者和声明
+# 一个仓库放多家插件时，WONTON_PLUGIN 指定插件目录（如 WONTON_PLUGIN=agents/<名>）。
 set -euo pipefail
 # shellcheck source=scripts/lib.sh
 . "$(dirname "$0")/lib.sh"
@@ -14,6 +15,7 @@ case "${1:-}" in
   *) die "用法：scripts/check.sh [--official]" ;;
 esac
 need_core_command check
+need_plugin
 # 套件自己的命令（logs、diag）的用例：用假 docker，不碰真的 Docker。
 "$root/scripts/dev_test.sh"
 
@@ -21,7 +23,7 @@ need_core_command check
 # 拿一个必报太新的最小清单去问核心支持到哪版（问不到就不提醒），比清单的 spec 旧就提醒一句。
 spec_reminder() {
   local facts plugin_spec core_max probe core_out a1 a2 b1 b2
-  facts="$(docker compose -f "$root/docker-compose.yml" config --no-interpolate --format json 2>/dev/null)" || return 0
+  facts="$(docker compose -f "$plugin/docker-compose.yml" config --no-interpolate --format json 2>/dev/null)" || return 0
   plugin_spec="$(python3 - "$facts" <<'PY'
 import json, sys
 try:
@@ -48,7 +50,7 @@ PY
 output="$(mktemp)"
 trap 'rm -f "$output"' EXIT
 set +e
-in_core "$root" plugin check /plugin "$@" >"$output" 2>&1
+in_core "$plugin" plugin check /plugin "$@" >"$output" 2>&1
 status=$?
 set -e
 cat "$output"

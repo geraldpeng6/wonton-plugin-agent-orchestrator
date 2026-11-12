@@ -8,6 +8,11 @@ trap 'rm -rf "$work"' EXIT
 bin="$work/bin"
 state="$work/state"
 mkdir -p "$bin" "$state"
+# 套件复制到一个单插件布局的假仓库里跑：一个仓库放多家插件时根目录没有清单，用例不该跟着仓库布局变。
+repo="$work/repo"
+mkdir -p "$repo"
+cp -R "$root/scripts" "$repo/"
+: >"$repo/docker-compose.yml"
 touch "$state/compose.yaml"
 printf 'WONTON_INSTANCE=test\n' >"$state/.env"
 
@@ -24,6 +29,8 @@ case "${1:-}" in
     esac
     ;;
   ps) printf 'wonton-test--app-web--web\nwonton-test--app-web--web--bot\nwonton-test--db--db\n' ;;
+  info) printf '%s\n' "${FAKE_OS:-Ubuntu 24.04 LTS}" ;;
+  network) [[ -n "${FAKE_GATEWAY:-}" ]] && printf '%s\n' "$FAKE_GATEWAY" ;;
   logs) printf 'plugin-logs:%s\n' "$*" ;;
   inspect) printf '%s\n' "${FAKE_RUNNING:-true}" ;;
   run)
@@ -117,7 +124,17 @@ PY
     ;;
   */upgrade*)
     [[ -n "${FAKE_HIT_FILE:-}" ]] && printf 'POST %s\n' "$url" >>"$FAKE_HIT_FILE"
+    for arg in "$@"; do
+      [[ "$arg" != Wonton-Plugin-Settings:* ]] || printf '%s\n' "${arg#*: }" >"${FAKE_HEADER_FILE:?}"
+    done
     cat "${FAKE_RESULT_FILE:?}"
+    ;;
+  */settings)
+    cat "${FAKE_STORED_FILE:?}"
+    ;;
+  */_wonton/api/models/custom-provider)
+    printf '%s\n' "$*" >"${FAKE_ARGS_FILE:?}"
+    cat >"${FAKE_BODY_FILE:?}"
     ;;
   *)
     printf '%s\n' "$FAKE_SETTINGS"
@@ -134,8 +151,8 @@ run() {
   local -a env=()
   while [[ "$1" != -- ]]; do env+=("$1"); shift; done
   shift
-  env "${env[@]}" PATH="$bin:$PATH" HOME="$work" WONTON_DEV_STATE="$state" \
-    bash "$root/scripts/dev.sh" "$@" >"$work/out" 2>"$work/err" || status=$?
+  env -u WONTON_PLUGIN "${env[@]}" PATH="$bin:$PATH" HOME="$work" WONTON_DEV_STATE="$state" \
+    bash "$repo/scripts/dev.sh" "$@" >"$work/out" 2>"$work/err" || status=$?
   out="$(cat "$work/out")"
   err="$(cat "$work/err")"
   if [[ $status == "$want" ]]; then return 0; fi
@@ -244,6 +261,90 @@ has "$err" "装不了：这台主机缺 GPU" "blocked 要拦住升级"
 # 接口挂了：报错退出。
 run 1 FAKE_API=fail -- upgrade --yes || true
 has "$err" "预览失败" "接口挂了要报错"
+
+# --setting：按预览里的表单定类型，经 Wonton-Plugin-Settings 头（base64url JSON）上行，装完核对存下了。
+# eula 是装着时同意过的必填项（预览带着值），players 是带默认值的整数，mode 是单选。
+form='"settings":{"fields":[
+  {"name":"eula","title":"同意","required":true,"kind":{"type":"toggle"},"value":{"type":"flag","value":true},"default":null},
+  {"name":"players","title":"人数","required":false,"kind":{"type":"integer","min":1,"max":100},"value":null,"default":{"type":"integer","value":20}},
+  {"name":"mode","title":"模式","required":false,"kind":{"type":"choice","multiple":false,"options":[{"value":{"type":"text","value":"easy"},"title":"简单"}]},"value":null,"default":null}]}'
+printf '%s\n' "{\"title\":\"示例\",\"id\":\"com.example.app\",\"version\":\"1.2.4\",\"permissions\":[],\"notices\":[],\"blocked\":null,$form}" >"$work/settings-preview.json"
+sed 's/"value":{"type":"flag","value":true}/"value":null/' "$work/settings-preview.json" >"$work/unset-preview.json"
+stored() { # <players 存着的值>
+  printf '{"schema_digest":"sha256:x","form":{"fields":[{"name":"players","title":"人数","required":false,"kind":{"type":"integer"},"value":{"type":"integer","value":%s}},{"name":"mode","title":"模式","required":false,"kind":{"type":"text"},"value":{"type":"text","value":"easy"}}]}}\n' "$1" >"$work/stored.json"
+}
+stored 5
+export FAKE_HEADER_FILE="$work/header" FAKE_STORED_FILE="$work/stored.json"
+run 0 "FAKE_PREVIEW_FILE=$work/settings-preview.json" -- upgrade --yes --setting players=5 --setting mode=easy || true
+has "$out" "升级好了" "带设置值升级"
+has "$(python3 -c 'import base64,sys; v=sys.argv[1]; print(base64.urlsafe_b64decode(v + "=" * (-len(v) % 4)).decode())' "$(cat "$work/header")")" \
+  '{"players": {"type": "integer", "value": 5}, "mode": {"type": "text", "value": "easy"}}' "按表单的类型编码设置值"
+run 1 "FAKE_PREVIEW_FILE=$work/settings-preview.json" -- upgrade --yes --setting nope=1 || true
+has "$err" "这个插件没有设置 nope" "不认识的设置要报错"
+run 1 "FAKE_PREVIEW_FILE=$work/settings-preview.json" -- upgrade --yes --setting players=many || true
+has "$err" "设置 players 要整数" "类型不对要报错"
+run 1 "FAKE_PREVIEW_FILE=$work/settings-preview.json" -- upgrade --yes --setting mode=hard || true
+has "$err" "设置 mode 只能取这些值：easy" "选项外的值要报错"
+run 1 "FAKE_PREVIEW_FILE=$work/unset-preview.json" -- upgrade --yes || true
+has "$err" "必填的设置没有值：eula" "必填项没值要在发请求前报错"
+# 核心不认识这个头时照装、不存值：要报出来，不能当装好了。
+stored 20
+run 1 "FAKE_PREVIEW_FILE=$work/settings-preview.json" -- upgrade --yes --setting players=5 || true
+has "$err" "核心没存下给的设置值" "值没存下要报错"
+
+# model：key 只经标准输入进请求体，不出现在 curl 的参数和 dev.sh 的输出里。
+printf 'sk-test-only-1234\n' >"$work/model.key"
+export FAKE_ARGS_FILE="$work/model.args" FAKE_BODY_FILE="$work/model.body"
+run 0 -- model http://192.0.2.10:3425/v1 some-model "$work/model.key" || true
+has "$out" "模型网关接上了 http://192.0.2.10:3425/v1 的 some-model" "接好要报上游和模型"
+has "$(cat "$FAKE_BODY_FILE")" '{"base_url": "http://192.0.2.10:3425/v1", "model": "some-model", "key": "sk-test-only-1234"}' "请求体带上 key 文件里的 key"
+if grep -q sk-test-only "$FAKE_ARGS_FILE" || [[ "$out$err" == *sk-test-only* ]]; then
+  echo "FAIL key 出现在 curl 参数或输出里" >&2
+  failed=$((failed + 1))
+fi
+
+# Linux 上 host.docker.internal 换成模型网关插件网络的网关地址；Docker Desktop、OrbStack 上原样用。
+run 0 FAKE_GATEWAY=198.51.100.1 -- model http://host.docker.internal:3425/v1 m "$work/model.key" || true
+has "$(cat "$FAKE_BODY_FILE")" '"base_url": "http://198.51.100.1:3425/v1"' "Linux 上换成网关地址"
+run 0 "FAKE_OS=Docker Desktop" -- model http://host.docker.internal:3425/v1 m "$work/model.key" || true
+has "$(cat "$FAKE_BODY_FILE")" '"base_url": "http://host.docker.internal:3425/v1"' "Docker Desktop 上原样用"
+run 1 -- model http://host.docker.internal:3425/v1 m "$work/model.key" || true
+has "$err" "找不到模型网关的插件网络" "Linux 上找不到网络要报错"
+
+# key 文件读不到、地址不像地址：报错，不发请求。
+run 1 -- model http://192.0.2.10/v1 m "$work/nope.key" || true
+has "$err" "读不到 key 文件" "key 文件不存在要报错"
+run 1 -- model 192.0.2.10/v1 m "$work/model.key" || true
+has "$err" "上游地址要以 http:// 或 https:// 开头" "地址不对要报错"
+
+# 附加检查的子项：extra_item 记的每一行成为“附加检查·<子项>”，汇总一行按最坏的算。
+extra_out() { # <extra_check 的函数体>
+  (
+    set +eu
+    PROBES_LOG="$work/probes.log" SMOKE_STATE="$work/marker"
+    : >"$PROBES_LOG"
+    # shellcheck source=scripts/lib.sh
+    . "$root/scripts/lib.sh"
+    # shellcheck source=scripts/probes.sh
+    . "$root/scripts/probes.sh"
+    eval "extra_check() { $1; }"
+    probes_extra
+  )
+}
+out="$(extra_out 'extra_item PASS 甲 好了; extra_item N/A 乙 没给镜像')"
+has "$out" "PASS 附加检查·甲：好了" "PASS 子项原样打印"
+has "$out" "N/A  附加检查·乙：没给镜像" "N/A 子项原样打印"
+has "$out" "PASS 附加检查：1 个子项通过" "有通过、没有失败时汇总通过"
+out="$(extra_out 'extra_item PASS 甲 好了; extra_item FAIL 乙 "坏了
+第二行"')"
+has "$out" "FAIL 附加检查·乙：坏了 第二行" "说明里的换行换成空格"
+has "$out" "FAIL 附加检查：子项失败：乙" "任一子项失败时汇总失败"
+out="$(extra_out 'extra_item N/A 甲 不适用')"
+has "$out" "N/A  附加检查：1 个子项都没测" "子项全是 N/A 时汇总 N/A"
+out="$(extra_out 'echo 只看返回值; return 3')"
+has "$out" "FAIL 附加检查：extra_check 失败（退出 3）" "钩子返回非 0 时失败"
+out="$(extra_out 'echo 只看返回值')"
+has "$out" "PASS 附加检查：extra_check 通过" "没记子项时只看返回值"
 
 if ((failed > 0)); then
   echo "$failed 处失败" >&2

@@ -1,14 +1,17 @@
 scripts/dev.sh
 scripts/dev-diag.sh
 scripts/dev-mcp.sh
+scripts/dev-model.sh
 scripts/dev-resources.sh
 scripts/dev-kit.sh
 scripts/dev_settings.py
+scripts/plugin_settings.py
 scripts/dev_test.sh
 scripts/check.sh
 scripts/publish.sh
 scripts/lib.sh
 scripts/probes.sh
+scripts/agent-probes.sh
 scripts/smoke.sh
 scripts/mcp_client.py
 scripts/kit.files

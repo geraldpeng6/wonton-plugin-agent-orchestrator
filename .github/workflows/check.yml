@@ -23,7 +23,7 @@ permissions:
 
 jobs:
   check:
-    uses: geraldpeng6/wonton-plugin-template/.github/workflows/plugin-check.yml@b54f8af47712177884e8cd21db164c873051992d
+    uses: geraldpeng6/wonton-plugin-template/.github/workflows/plugin-check.yml@a60fd4a0e752c5230707684b6e1c8091eede8795
     with:
       # 优先级：手动触发填的输入 > 仓库变量 WONTON_CORE_IMAGE（要固定别的核心镜像，例如套件默认镜像
       # 还没有某个新能力时，在仓库 Settings → Variables 里设）> 套件默认（空，走 scripts/lib.sh 的默认值）。
