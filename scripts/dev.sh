@@ -5,6 +5,7 @@
 #   scripts/dev.sh up                         起开发环境，等到都健康；再执行一次就是拉最新的核心镜像重启
 #   scripts/dev.sh install [--yes] [<引用>]   预览后安装插件：默认装工作区里的，给了 git 引用（tag、分支、提交）就装那个版本
 #   scripts/dev.sh reinstall [--yes]          卸载（保留数据）再装上工作区里的：改了插件包以后用
+#   scripts/dev.sh upgrade [--yes] [<引用>]   升级已装的插件：换容器不吊销 Bot 的设备，数据和密钥都留着
 #   scripts/dev.sh rebuild                    强制重建核心栈，再保数据重装工作区插件；其他插件容器不重建
 #   scripts/dev.sh uninstall [--purge]        卸载；--purge 连插件的数据一起删
 #   scripts/dev.sh status                     开发环境的服务和装着的插件
@@ -32,8 +33,10 @@
 # WONTON_INSTANCE（实例名）、WONTON_PORT（网页端口，隧道用下一个端口）、WONTON_DEV_DOMAIN（基础域名，默认
 # <实例名>.wonton.localhost）、WONTON_PULL=never（用本机构建的核心镜像，不拉取）。之后改 .wonton/.env 再 up。
 # 对着别的栈跑 probes、api、session 时，在 .wonton/.env 写那套栈的 WONTON_BASE_DOMAIN：实例名只是资源名前缀，
-# 不是域名。WONTON_DEV_CORE_SUBNET（如 10.214.1.0/24）让核心网络用这个子网，不占 Docker 的
+# 不是域名。WONTON_DEV_CORE_SUBNET（一段没被占用的私网 /24）让核心网络用这个子网，不占 Docker 的
 # 默认地址池（只有约 30 个网络，几套栈共用一台 Docker 时会用光）；写进 .wonton/compose.subnet.yaml，栈拆掉之前一直沿用。
+# WONTON_DEV_STATE（如 ~/.w/<插件名>）把 .wonton 整个换到别处，每次执行都要带上：宿主网络插件的中继套接字在
+# <它>/data/apps/<插件 id>/relay/webui.sock，unix 套接字路径最多 107 字节，仓库放得深时核心会拒装。
 set -euo pipefail
 # forget_environment 会清掉所有 WONTON_*，先留一份。
 core_subnet="${WONTON_DEV_CORE_SUBNET:-}"
@@ -374,6 +377,44 @@ reinstall() {
   install_plugin $yes
 }
 
+# 升级已装的插件：走核心的升级接口，数据和 Bot 的 Matrix 设备都保留（reinstall 是卸载再装，会吊销 Bot 设备，
+# Bot 就读不到旧房间的加密历史了）。
+upgrade() {
+  local yes="" ref="" dir="$root" arg id preview grants result answer
+  for arg in "$@"; do
+    case "$arg" in
+      --yes) yes=1 ;;
+      -*) usage ;;
+      *) [[ -z "$ref" ]] || usage; ref="$arg" ;;
+    esac
+  done
+  need_env
+  id="$(plugin_id)"
+  # 放在 .wonton/ 里：Docker Desktop 一定能挂载仓库下面的目录。退出时才删，所以 tmp 不是局部变量。
+  tmp="$(mktemp -d "$state/tmp.XXXXXX")"
+  trap 'rm -rf "$tmp"' EXIT
+  if [[ -n "$ref" ]]; then
+    mkdir "$tmp/src"
+    git -C "$root" archive "$ref" | tar -x -C "$tmp/src" || die "导不出 $ref（git archive 失败）"
+    dir="$tmp/src"
+  fi
+  in_core "$dir" plugin pack /plugin >"$tmp/package.tar" || die "打包失败，原因见上面"
+  preview="$(api POST "/_wonton/api/plugins/$id/upgrade/preview" -H 'Content-Type: application/x-tar' --data-binary @"$tmp/package.tar")" ||
+    die "预览失败：$(error_text "$preview")"
+  grants="$(show_preview "$preview")" || exit 1
+  if [[ -z "$yes" ]]; then
+    read -r -p "确认升级？[y/N] " answer
+    [[ "$answer" == [yY] ]] || die "没升"
+  fi
+  result="$(api POST "/_wonton/api/plugins/$id/upgrade?grant=$grants" -H 'Content-Type: application/x-tar' --data-binary @"$tmp/package.tar")" ||
+    die "升级失败：$(error_text "$result")"
+  python3 - "$result" <<'PY'
+import json, sys
+p = json.loads(sys.argv[1])["plugin"]
+print(f"升级好了：{p['title']} {p['version']}" + (f"，网页 {p['web_url']}" if p.get("web_url") else ""))
+PY
+}
+
 rebuild() {
   [[ $# -eq 0 ]] || usage
   need_env
@@ -624,17 +665,43 @@ mcp() {
 }
 
 approve_pending() {
-  local list cards id title reply failed=0
+  local list cards id title reason body reply failed=0
   list="$(api GET /_wonton/api/confirmations)" || die "取不到等回答的卡片：$(error_text "$list")"
+  # 每行四段：id、标题、拒批原因（能批时是 -）、回答体（拒批时是 -）。段都不会是空的，空段会被 read 并掉。
   cards="$(python3 - "$list" <<'PY'
 import json, sys
+
+# 权限确认卡（ACP session/request_permission 转来的）每个选项都带 choice_id，核心按
+# answer + choice_id 匹配卡片上的按钮，只发 answer 会被 400 invalid_input 拒掉：从卡片
+# 挑第一个「允许」类选项，把它自己的 answer 和 choice_id 原样发回去。核心认 approve、
+# approve_wider、allow_window 三种 answer 为同意（答别的等同拒绝）。
+ALLOW = {"approve", "approve_wider", "allow_window"}
 for card in json.loads(sys.argv[1])["confirmations"]:
-    print(card["id"], card["title"].replace("\t", " ").replace("\n", " "), sep="\t")
+    choices = card.get("choices", [])
+    chosen = next(
+        (c for c in choices if c.get("choice_id") and c.get("answer") in ALLOW), None
+    )
+    if chosen is not None:
+        reason, body = "-", json.dumps(
+            {"answer": chosen["answer"], "choice_id": chosen["choice_id"]}
+        )
+    elif not any(c.get("choice_id") for c in choices):
+        # 没有带 choice_id 选项的普通卡片：只发 answer 就行。
+        reason, body = "-", '{"answer":"approve"}'
+    else:
+        reason, body = "卡片上没有允许类的选项，不能代批", "-"
+    title = card["title"].replace("\t", " ").replace("\n", " ")
+    print(card["id"], title, reason, body, sep="\t")
 PY
   )" || die "看不懂核心回的确认卡片：$list"
   [[ -n "$cards" ]] || return 3
-  while IFS=$'\t' read -r id title; do
-    if reply="$(api POST "/_wonton/confirmations/$id" -H 'Content-Type: application/json' -d '{"answer":"approve"}')"; then
+  while IFS=$'\t' read -r id title reason body; do
+    if [[ "$reason" != "-" ]]; then
+      echo "没批准：$title：$reason" >&2
+      failed=1
+      continue
+    fi
+    if reply="$(api POST "/_wonton/confirmations/$id" -H 'Content-Type: application/json' -d "$body")"; then
       echo "已批准：$title"
     else
       echo "没批准：$title：$(error_text "$reply")" >&2
@@ -742,6 +809,7 @@ case "${1:-}" in
   up) up ;;
   install) install_plugin "${@:2}" ;;
   reinstall) reinstall "${@:2}" ;;
+  upgrade) upgrade "${@:2}" ;;
   rebuild) rebuild "${@:2}" ;;
   uninstall) uninstall_plugin "${@:2}" ;;
   status) status ;;

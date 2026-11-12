@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       core-image:
-        description: 核心镜像（如 ghcr.io/geraldpeng6/wonton-core:sha-<完整 40 位提交号>，钉在某次合并上复测；留空用套件默认的 :main）
+        description: 核心镜像（如 ghcr.io/wontonapp/wonton-core:sha-<完整 40 位提交号>，钉在某次合并上复测；留空用仓库变量 WONTON_CORE_IMAGE，再留空用套件默认的 :main）
         required: false
         type: string
         default: ''
@@ -23,8 +23,9 @@ permissions:
 
 jobs:
   check:
-    uses: geraldpeng6/wonton-plugin-template/.github/workflows/plugin-check.yml@4b37101b12911fc1abe79c6583329825c9e3b045
+    uses: geraldpeng6/wonton-plugin-template/.github/workflows/plugin-check.yml@b54f8af47712177884e8cd21db164c873051992d
     with:
-      # pull_request 和 push 触发时没有这个输入，为空，走套件默认。
-      core-image: ${{ inputs.core-image }}
+      # 优先级：手动触发填的输入 > 仓库变量 WONTON_CORE_IMAGE（要固定别的核心镜像，例如套件默认镜像
+      # 还没有某个新能力时，在仓库 Settings → Variables 里设）> 套件默认（空，走 scripts/lib.sh 的默认值）。
+      core-image: ${{ inputs.core-image || vars.WONTON_CORE_IMAGE }}
       upgrade-from: ${{ inputs.upgrade-from }}
