@@ -12,6 +12,8 @@ extra_check() {
   agent_check_chat '请用一句话回答：agent-orchestrator 冒烟。'
   agent_check_model
   # 外人进出房间后桥会换 Megolm 会话，之后新登录的探针设备解不开回话：只断言无声，“会回用户”由任务用例承担。
+  # 编排器回完一轮后还会陆续发几条（分段的回答、状态），先等它说完，免得算到外人头上。
+  sleep 60
   agent_check_outsider silent
   ao_check_task
   ao_check_restart
