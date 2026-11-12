@@ -5,7 +5,9 @@ import urllib.parse
 from ao import http
 from transport import log, request, update
 
-PERMISSION_TIMEOUT = 900.0
+# 和 adapter.py 的 PROMPT_TIMEOUT 同一个预算：轮内随时会弹卡，卡等满这个时长才取消，
+# 别比桥的单轮超时先动手把任务杀在半路。
+PERMISSION_TIMEOUT = 1800.0
 
 
 def tool_kind(activity):
