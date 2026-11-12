@@ -31,18 +31,21 @@ mkdir -p "$root/.wonton"
 exec 9>"$root/.wonton/smoke.lock"
 flock -n 9 || die "同一仓库的另一套冒烟正在跑"
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/wonton-smoke.XXXXXX")"
+# 状态目录放短路径：宿主网络插件的中继套接字在 <状态>/data/apps/<插件 id 把 . 换成 ->/relay/webui.sock，unix 套接字
+# 路径最多 107 字节。/tmp/ws.XXXXXX/s 是 16 字节，id 最长 63 时正好 107。不用 TMPDIR：macOS 的 TMPDIR 在
+# /var/folders/… 下，本身就有 40 多字节。
+work="$(mktemp -d /tmp/ws.XXXXXX)"
 copy="$work/repo"
 LOG="$root/.wonton/smoke.log"
 : >"$LOG"
 instance="smoke$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
 SMOKE_DIR="$copy"
-SMOKE_DEV_STATE="$copy/.wonton"
+SMOKE_DEV_STATE="$work/s"
 # 数据标记是个空文件（与 e2e 冒烟的约定一致）：插件钩子只当它是文件，不往里建目录。
 SMOKE_STATE="$work/data-marker"
 : >"$SMOKE_STATE"
 SMOKE_INSTANCE="$instance"
-SMOKE_JAR="$copy/.wonton/session.cookies"
+SMOKE_JAR="$SMOKE_DEV_STATE/session.cookies"
 SMOKE_TOOLS="$work/tools.json"
 PROBES_LOG="$LOG"
 
@@ -52,8 +55,8 @@ strip_docker_proxies "$work/docker-config"
 
 cleanup() {
   local image=""
-  image="$(sed -n 's/^WONTON_CORE_IMAGE=//p' "$copy/.wonton/.env" 2>/dev/null | tail -1)"
-  if [[ -f "$copy/.wonton/.env" ]]; then
+  image="$(sed -n 's/^WONTON_CORE_IMAGE=//p' "$SMOKE_DEV_STATE/.env" 2>/dev/null | tail -1)"
+  if [[ -f "$SMOKE_DEV_STATE/.env" ]]; then
     say "清理实例 $instance"
     (cd "$copy" && nice -n 19 timeout 900 scripts/dev.sh purge --yes) >>"$LOG" 2>&1
   fi
