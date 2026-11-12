@@ -14,8 +14,11 @@ extra_check() {
   # 外人进出房间后桥会换 Megolm 会话，之后新登录的探针设备解不开回话：只断言无声，“会回用户”由任务用例承担。
   # 编排器回完一轮后还会陆续发几条（分段的回答、状态），先等它安静 60 秒，免得算到外人头上；
   # 模型慢的时候隔几分钟才补完，所以外人那条等 120 秒才算无声。
-  ao_quiet 60
-  agent_check_outsider silent 120
+  # 这一项曾经时过时不过（约三分之一命中）：每轮先等安静、ping 预检，连跑 5 轮，全过才算过。
+  for _ in 1 2 3 4 5; do
+    ao_quiet 60
+    agent_check_outsider silent 120
+  done
   ao_check_task
   ao_check_restart
 }
@@ -33,6 +36,7 @@ ao_quiet() {
     if ((now - last > wait * 1000)); then quiet=1; break; fi
     sleep 5
   done
+  echo "ao_quiet：last_bot_ts=${last:-0} now=$now（距上次回话 $(( (now - ${last:-0}) / 1000 )) 秒）"
   ((quiet)) || echo "Bot 一直没安静下来，照常接着测"
 }
 
