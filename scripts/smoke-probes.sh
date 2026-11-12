@@ -12,11 +12,27 @@ extra_check() {
   agent_check_chat '请用一句话回答：agent-orchestrator 冒烟。'
   agent_check_model
   # 外人进出房间后桥会换 Megolm 会话，之后新登录的探针设备解不开回话：只断言无声，“会回用户”由任务用例承担。
-  # 编排器回完一轮后还会陆续发几条（分段的回答、状态），先等它说完，免得算到外人头上。
-  sleep 60
-  agent_check_outsider silent
+  # 编排器回完一轮后还会陆续发几条（分段的回答、状态），先等它安静 60 秒，免得算到外人头上；
+  # 模型慢的时候隔几分钟才补完，所以外人那条等 120 秒才算无声。
+  ao_quiet
+  agent_check_outsider silent 120
   ao_check_task
   ao_check_restart
+}
+
+# 等到 Bot 在房间里安静 <秒数>（默认 60），最多等 600 秒：按最后一条 Bot 消息算。
+ao_quiet() {
+  local wait="${1:-60}" room_url token last now quiet=0
+  room_url="$(jq -rn --arg r "$AGENT_ROOM" '$r | @uri')"
+  token="$(docker exec "$SMOKE_CORE" cat "$SMOKE_DATA_DIR/core/matrix-admin-token")"
+  for _ in $(seq 1 120); do
+    last="$(agent_matrix "$token" GET "/_matrix/client/v3/rooms/$room_url/messages?dir=b&limit=20" 2>/dev/null |
+      jq --arg b "$AGENT_BOT" '[.chunk[]? | select(.sender == $b) | .origin_server_ts // 0] | max // 0')"
+    now="$(($(date +%s) * 1000))"
+    if ((now - last > wait * 1000)); then quiet=1; break; fi
+    sleep 5
+  done
+  ((quiet)) || echo "Bot 一直没安静下来，照常接着测"
 }
 
 ao_agent() { running_container "wonton-$SMOKE_INSTANCE--$SMOKE_SLUG--agent"; }
