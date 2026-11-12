@@ -67,10 +67,10 @@ x-wonton:
   id: ai.agent-orchestrator
   version: 0.1.0
   kind: agent
-  title: { zh: Agent Orchestrator, en: Agent Orchestrator }
+  title: { zh: AI 编程队长（Agent Orchestrator）, en: Coding Team Lead (Agent Orchestrator) }
   description:
-    zh: 会分活给一群工人的编排 Agent，每个任务一个话题，问你、批了才动手
-    en: An orchestrating agent that splits work across workers, one topic per task
+    zh: 像给一队编程助手请了位队长：你交给它一个大任务，它拆开派给几个助手分头去做，要你拿主意时弹卡片问你，每个任务单独一个话题。需要先在模型设置里配好 AI。
+    en: "A team lead for a crew of coding bots: hand it one big job and it splits the work across several helpers, asks you with a card when a decision is needed, and keeps each task in its own topic. Set up AI in Models first."
   icon: icon.png
   notices: [NOTICE, images/wonton-plugin-agent-orchestrator/LICENSE.agent-orchestrator]
   author: { name: Wonton plugin authors }
@@ -79,19 +79,19 @@ x-wonton:
   tags: { zh: [AI, 开发], en: [AI, Development] }
   about:
     zh: |
-      Agent Orchestrator（AO）是给一群编程 Agent 派活的编排器。它就是聊天里的一个 Bot：你给它一个目标，
-      它把活拆给工人，每个工人在自己的 git worktree 里干活；要问你、要批准的时候出确认卡片，每个任务
-      一个话题，回复、CI 和 review 的进展都留在那个话题里。
+      Agent Orchestrator 是给一群编程 AI 派活的“队长”。你给它一个目标，它把活拆给几个“工人”，
+      每人一块自己的地盘各干各的；要问你、要你批准的时候，会弹出确认卡片。每个任务单独开一个聊天话题，
+      回复和进展都记在对应的话题里，不会搅在一起。
 
       工人和编排器都是 Qwen Code，模型走网关；编排器自己的并发、分工和反馈回投由 AO 管，云吞只做话题、
       卡片和推送。
 
       它住在自己的容器里：AO 守护进程只监听容器内 loopback，不给 Docker socket，也碰不到宿主。
     en: |
-      Agent Orchestrator (AO) is an orchestrator that hands work to a fleet of coding agents. It is one
-      bot in the chat: you give it a goal, it splits the work across workers, each in its own git
-      worktree. Questions and approvals come as confirmation cards, every task gets a topic, and
-      replies, CI and review updates stay in that topic.
+      Agent Orchestrator is the team lead for a crew of coding AIs. Give it a goal and it splits the
+      work across several "workers", each in its own space; when your input or approval is needed,
+      an approval request pops up. Every task gets its own chat topic, so replies and progress stay
+      with that task instead of mixing together.
 
       Orchestrator and workers are Qwen Code over the model gateway; AO owns concurrency, splitting and
       feedback routing, Wonton only does topics, cards and push.
