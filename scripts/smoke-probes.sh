@@ -86,7 +86,8 @@ ao_check_task() {
     fi
     sleep 2
   done
-  wait "$bg"
+  # 等回答失败时 wait 返回非 0，后面几项还要跑，别让它把整个附加检查带走。
+  wait "$bg" || true
   cat "$reply"
   if ((opened)); then
     extra_item PASS 任务话题 "编排器开了任务：$(ao_api GET /api/v1/sessions | jq -r '[.sessions[] | select(.kind == "worker")] | length') 个 worker"
