@@ -14,7 +14,7 @@ extra_check() {
   # 外人进出房间后桥会换 Megolm 会话，之后新登录的探针设备解不开回话：只断言无声，“会回用户”由任务用例承担。
   # 编排器回完一轮后还会陆续发几条（分段的回答、状态），先等它安静 60 秒，免得算到外人头上；
   # 模型慢的时候隔几分钟才补完，所以外人那条等 120 秒才算无声。
-  ao_quiet
+  ao_quiet 60
   agent_check_outsider silent 120
   ao_check_task
   ao_check_restart
@@ -24,6 +24,7 @@ extra_check() {
 ao_quiet() {
   local wait="${1:-60}" room_url token last now quiet=0
   room_url="$(jq -rn --arg r "$AGENT_ROOM" '$r | @uri')"
+  # shellcheck disable=SC2153 # SMOKE_CORE 是套件在运行时给的
   token="$(docker exec "$SMOKE_CORE" cat "$SMOKE_DATA_DIR/core/matrix-admin-token")"
   for _ in $(seq 1 120); do
     last="$(agent_matrix "$token" GET "/_matrix/client/v3/rooms/$room_url/messages?dir=b&limit=20" 2>/dev/null |
