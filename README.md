@@ -7,9 +7,9 @@ Agent Orchestrator
 它要问你、要你批准的时候出确认卡片，所以动手之前你看得到。每个任务一个话题，工人的回复、CI 和 review
 的进展都留在那个话题里，主对话只有一行“新任务”。
 
-编排器和工人都是 [Qwen Code](https://github.com/QwenLM/qwen-code)，模型经网关（必填，Qwen 只认 key，
-不需要账号登录）。并发、分工、反馈回投由 AO 自己管；云吞只提供话题、确认卡片和推送。任务数量和每个任务
-用哪个 Agent 在 AO 里定，云吞不做二次限制。
+编排器和工人都是 [Qwen Code](https://github.com/QwenLM/qwen-code)，模型使用模型网关。网关未就绪时不改连其他来源；
+API key 和自建地址在模型设置里配置。并发、分工、反馈回投由 AO 自己管；云吞只提供话题、确认卡片和推送。
+任务数量在 AO 里定。
 
 自动从 issue 接活默认关。
 
@@ -23,7 +23,7 @@ Agent Orchestrator
 ## 构建镜像
 
 ```bash
-docker build -t ghcr.io/geraldpeng6/wonton-plugin-agent-orchestrator:0.1.0 -f images/wonton-plugin-agent-orchestrator/Dockerfile images/wonton-plugin-agent-orchestrator
+docker build -t ghcr.io/geraldpeng6/wonton-plugin-agent-orchestrator:0.1.2 -f images/wonton-plugin-agent-orchestrator/Dockerfile images/wonton-plugin-agent-orchestrator
 ```
 
 镜像按上游 v0.14.10 的源码原样构建（sha256 核对，不改源码）：上游只为 Linux x64 发 deb/AppImage，
@@ -37,6 +37,7 @@ registry 按摘要下载到数据卷，首启要多等一会儿；健康检查�
 - 工人的命令和文件改动全部经确认卡片；AO 的“完全权限”没有打开。
 - 插件容器里没有 Docker，AO 的容器回收（ContainerReap）对自己容器里 `docker run` 的活儿不生效，
   工人在容器里怎么跑都行。
+- 插件能执行命令并出网，模型设置不是网络级隔离；工人运行的任意代码仍可自行访问网络。
 
 ## 图标
 

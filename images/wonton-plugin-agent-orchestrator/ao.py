@@ -104,13 +104,16 @@ def ensure_project():
 def configure_project(project_id):
     # 模型网关变量给每个会话显式带上：AO 不把守护进程环境透传给 Agent 进程。
     # 项目 env 大小写不敏感、两种写法算重名，代理变量优先取小写（undici 只认小写）。
-    env = {}
-    for key in ("openai_base_url", "openai_api_key", "openai_model",
-                "https_proxy", "http_proxy", "no_proxy"):
+    env = {
+        "OPENAI_BASE_URL": os.environ["WONTON_MODEL_BASE_URL"],
+        "OPENAI_API_KEY": os.environ["WONTON_MODEL_API_KEY"],
+        "OPENAI_MODEL": os.environ["WONTON_MODEL_DEFAULT"],
+    }
+    for key in ("https_proxy", "http_proxy", "no_proxy"):
         value = os.environ.get(key) or os.environ.get(key.upper())
         if value:
-            env[key if key.startswith(("openai", "https", "http", "no_")) else key] = value
-    http(
+            env[key] = value
+    status, _ = http(
         "PUT",
         f"/api/v1/projects/{project_id}/config",
         {
@@ -122,6 +125,8 @@ def configure_project(project_id):
             }
         },
     )
+    if status not in (200, 204):
+        raise RuntimeError(f"更新编排项目模型配置失败：HTTP {status}")
 
 
 def ensure_repo():
@@ -162,6 +167,10 @@ _bootstrap_lock = threading.Lock()
 def bootstrap(on_ready):
     """确保守护进程、仓库、项目和编排器都在；返回编排器会话 id。"""
     global _main_session
+    missing = [name for name in ("WONTON_MODEL_BASE_URL", "WONTON_MODEL_API_KEY", "WONTON_MODEL_DEFAULT")
+               if not os.environ.get(name, "").strip()]
+    if missing:
+        raise RuntimeError(f"模型网关未就绪：缺少 {', '.join(missing)}")
     with _bootstrap_lock:
         if _main_session:
             return _main_session
