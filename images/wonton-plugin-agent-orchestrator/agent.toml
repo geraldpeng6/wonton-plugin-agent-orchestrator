@@ -14,8 +14,7 @@ target = "~/.qwen/skills"
 [prompt]
 target = "~/.qwen/QWEN.md"
 
-# 网关钩子：把 WONTON_MODEL_* 写成工人读的 OPENAI_* 环境变量，并把 Wonton MCP 总线写进
-# qwen 的 MCP 配置；没有网关时清掉。
+# 网关钩子同步模型与 MCP 配置；缺网关时不启动编排器和工人。
 [gateway]
 hook = "/usr/local/lib/wonton-agent/gateway"
 

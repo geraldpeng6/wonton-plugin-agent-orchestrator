@@ -10,7 +10,7 @@ services:
       HOME: /data/agent/home
       WONTON_ACP_SOCKET: /data/run/acp.sock
       WONTON_AGENT_WORKSPACE: /workspace
-      # 模型网关钩子：有网关就把网关写成工人的 OPENAI_* 环境变量，为空就清掉。
+      # 编排器和工人的模型都使用核心注入的模型网关。
       WONTON_MODEL_BASE_URL: ${WONTON_MODEL_BASE_URL:-}
       WONTON_MODEL_API_KEY: ${WONTON_MODEL_API_KEY:-}
       WONTON_MODEL_DEFAULT: ${WONTON_MODEL_DEFAULT:-}
@@ -68,7 +68,7 @@ services:
 x-wonton:
   spec: "0.9"
   id: ai.agent-orchestrator
-  version: 0.1.1
+  version: 0.1.2
   kind: agent
   title: { zh: AI 编程队长（Agent Orchestrator）, en: Coding Team Lead (Agent Orchestrator) }
   description:
@@ -102,8 +102,10 @@ x-wonton:
       It lives in its own container: the AO daemon listens on container loopback only, gets no Docker
       socket and cannot reach the host.
   release_notes:
-    zh: 名单外检查更稳：先确认 Bot 空闲再发外人消息，连跑 5 轮，命中时自动抓现场。插件行为不变。
-    en: "The outsider check first confirms the bot is idle, runs five rounds, and captures evidence on a hit. Plugin behavior unchanged."
+    zh: 队长和助手都使用模型设置；模型没接好时会报错，不会换到其他地方。
+    en: The team lead and helpers use Models. If it is unavailable, they report an error instead of switching elsewhere.
+    zh-Hant: 隊長和助手都使用模型設定；模型未連上時會報錯，不會切換到其他地方。
+    ja: リーダーとアシスタントはモデル設定を使います。接続できない場合は別の接続先に切り替えず、エラーを表示します。
   agent:
     protocol: acp
   bot:
