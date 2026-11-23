@@ -66,7 +66,7 @@ services:
       start_interval: 2s
 
 x-wonton:
-  spec: "0.9"
+  spec: "0.11"
   id: ai.agent-orchestrator
   version: 0.1.2
   kind: agent
@@ -112,10 +112,11 @@ x-wonton:
     display_name: { zh: 编排器, en: Orchestrator }
   bots:
     services: [agent, bridge]
+  # 模型走可选能力模型网关；没接上网关时用各自的账号或 key。
+  wants: [models]
   permissions:
     - matrix.bot
     - tools
-    - models
     # 首次启动装 qwen-code、AO 自己的版本检查都要出网。
     - network.egress
   requirements:
