@@ -66,9 +66,9 @@ services:
       start_interval: 2s
 
 x-wonton:
-  spec: "0.11"
+  spec: "0.15"
   id: ai.agent-orchestrator
-  version: 0.1.2
+  version: 0.1.3
   kind: agent
   title: { zh: AI 编程队长（Agent Orchestrator）, en: Coding Team Lead (Agent Orchestrator) }
   description:
